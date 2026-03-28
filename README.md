@@ -33,6 +33,19 @@ npm run preview   # optional: test the build locally
 
 Output is static files in `dist/`—you can host them on any static host.
 
+### Deploy to GitHub Pages
+
+1. In the repo: **Settings → Pages → Build and deployment**, set **Source** to **GitHub Actions**.
+2. Push to `main` (or `master`). The workflow in `.github/workflows/deploy-pages.yml` builds the site and publishes it.
+3. The app is served at `https://<user>.github.io/<repo>/` for normal projects, or at `https://<user>.github.io/` if the repo is named `<user>.github.io`.
+
+The workflow sets the correct Vite `base` path automatically. To test a production build locally with a subpath:
+
+```bash
+GITHUB_PAGES_BASE=/your-repo/ npm run build
+npm run preview
+```
+
 ---
 
 ### Stack
