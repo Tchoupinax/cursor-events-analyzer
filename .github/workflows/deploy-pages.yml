@@ -25,23 +25,12 @@ jobs:
           node-version: "25"
           cache: npm
 
-      - name: Set base path for GitHub Pages
-        id: base
-        run: |
-          REPO="${{ github.event.repository.name }}"
-          OWNER="${{ github.repository_owner }}"
-          if [ "$REPO" = "${OWNER}.github.io" ]; then
-            echo "path=/" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=/${REPO}/" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install and build
         run: |
           npm ci
           npm run build
         env:
-          GITHUB_PAGES_BASE: ${{ steps.base.outputs.path }}
+          GITHUB_PAGES_BASE: "cursor-events-analyzer"
 
       - name: Verify build output (must be bundled JS, not /src/main.tsx)
         run: |
