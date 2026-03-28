@@ -72,7 +72,7 @@ export function buildSummary(rows: UsageRow[]): Summary {
   const byModelCost = aggregate(sorted, (r) => r.model, (r) => r.cost);
   const byModelTokens = aggregate(sorted, (r) => r.model, (r) => r.totalTokens);
   const byKind = aggregate(sorted, (r) => r.kind, (r) => r.cost);
-  const byUserCost = aggregate(sorted, (r) => r.user, (r) => r.cost).slice(0, 12);
+  const byUserCost = aggregate(sorted, (r) => r.user, (r) => r.cost);
 
   const topExpensive = [...sorted].sort((a, b) => b.cost - a.cost).slice(0, 8);
 

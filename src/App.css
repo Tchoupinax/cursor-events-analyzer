@@ -211,6 +211,141 @@ body {
   font-size: 0.95rem;
 }
 
+.leaderboard-intro {
+  margin-bottom: 1rem;
+  padding: 0 0.5rem;
+}
+
+.leaderboard-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.35rem;
+  color: var(--text);
+}
+
+.leaderboard-desc {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.leaderboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+
+.leaderboard-row--podium {
+  padding-left: 0.65rem;
+}
+
+.leaderboard-row--podium.leaderboard-row--1 {
+  border-left: 3px solid #e8b923;
+  background: linear-gradient(90deg, rgba(232, 185, 35, 0.1) 0%, var(--surface2) 52%);
+}
+
+.leaderboard-row--podium.leaderboard-row--2 {
+  border-left: 3px solid #94a3b8;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.12) 0%, var(--surface2) 52%);
+}
+
+.leaderboard-row--podium.leaderboard-row--3 {
+  border-left: 3px solid #c97a2d;
+  background: linear-gradient(90deg, rgba(201, 122, 45, 0.1) 0%, var(--surface2) 52%);
+}
+
+.leaderboard-rank {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  text-align: center;
+}
+
+.leaderboard-row--1 .leaderboard-rank {
+  color: #e8b923;
+}
+
+.leaderboard-row--2 .leaderboard-rank {
+  color: #94a3b8;
+}
+
+.leaderboard-row--3 .leaderboard-rank {
+  color: #d4a574;
+}
+
+.leaderboard-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.leaderboard-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  flex-shrink: 0;
+}
+
+.leaderboard-pct {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 3.25rem;
+  text-align: right;
+}
+
+.leaderboard-cost {
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  min-width: 5.5rem;
+  text-align: right;
+}
+
+@media (max-width: 520px) {
+  .leaderboard-row {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+
+  .leaderboard-rank {
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+
+  .leaderboard-name {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .leaderboard-stats {
+    grid-column: 2;
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -276,6 +411,10 @@ body {
   font-weight: 600;
   margin: 0 0 0.75rem;
   padding: 0 0.5rem;
+}
+
+.chart-card.leaderboard {
+  padding: 1.25rem 1rem 1rem;
 }
 
 .chart-card .recharts-pie-label-text {

@@ -14,9 +14,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Legend,
-  Pie,
-  PieChart,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -119,7 +117,7 @@ function CustomTooltip({
   payload?: { value: number; name?: string; color?: string }[];
   label?: string;
   valueLabel?: string;
-  chrome: (typeof CHART_CHROME)["dark"];
+  chrome: (typeof CHART_CHROME)[keyof typeof CHART_CHROME];
 }) {
   if (!active || !payload?.length) return null;
   const p = payload[0];
@@ -210,13 +208,18 @@ export default function App() {
     }
   };
 
-  const pieCostData = useMemo(() => {
+  const costByModelBarData = useMemo(() => {
     if (!summary) return [];
-    return topWithOther(summary.byModelCost, 8).map((x) => ({
+    const total = summary.totalCost;
+    const denom = total > 0 ? total : 1;
+    return topWithOther(summary.byModelCost, 12).map((x) => ({
       name: x.name,
       value: x.value,
+      pct: (x.value / denom) * 100,
     }));
   }, [summary]);
+
+  const costByModelChartHeight = Math.min(560, Math.max(260, 24 + costByModelBarData.length * 38));
 
   return (
     <div className="app">
@@ -265,26 +268,66 @@ export default function App() {
         tabIndex={-1}
         onChange={(e) => onFile(e.target.files?.[0] ?? null)}
       />
-      <div
-        className="dropzone"
-        role="button"
-        tabIndex={0}
-        onClick={() => fileInputRef.current?.click()}
-        onKeyDown={onDropzoneKeyDown}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-        aria-label="Upload CSV: choose a file or drag and drop it here"
-      >
-        <strong>Choose a CSV file</strong>
-        <span> or drag and drop it here</span>
-      </div>
+      {!summary && (
+        <>
+          <div
+            className="dropzone"
+            role="button"
+            tabIndex={0}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={onDropzoneKeyDown}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+            aria-label="Upload CSV: choose a file or drag and drop it here"
+          >
+            <strong>Choose a CSV file</strong>
+            <span> or drag and drop it here</span>
+          </div>
 
-      {fileName && <p className="file-name">Loaded: {fileName}</p>}
+          {fileName && <p className="file-name">Loaded: {fileName}</p>}
+        </>
+      )}
 
       {parseError && <div className="error" role="alert">{parseError}</div>}
 
       {summary && (
         <>
+          {summary.byUserCost.length > 0 && (
+            <section className="chart-card leaderboard" aria-labelledby="leaderboard-heading">
+              <div className="leaderboard-intro">
+                <h2 id="leaderboard-heading" className="leaderboard-title">
+                  Spend leaderboard
+                </h2>
+                <p className="leaderboard-desc">Users ranked by total cost in this file.</p>
+              </div>
+              <ol className="leaderboard-list">
+                {summary.byUserCost.map((u, i) => {
+                  const rank = i + 1;
+                  const pct =
+                    summary.totalCost > 0 ? (u.value / summary.totalCost) * 100 : 0;
+                  return (
+                    <li
+                      key={u.name}
+                      className={
+                        rank <= 3 ? `leaderboard-row leaderboard-row--podium leaderboard-row--${rank}` : "leaderboard-row"
+                      }
+                      aria-label={`${rank}. ${u.name}, ${formatMoney(u.value)}, ${pct.toFixed(1)}% of total spend`}
+                    >
+                      <span className="leaderboard-rank">{rank}</span>
+                      <span className="leaderboard-name" title={u.name}>
+                        {u.name}
+                      </span>
+                      <span className="leaderboard-stats">
+                        <span className="leaderboard-pct">{pct.toFixed(1)}%</span>
+                        <span className="leaderboard-cost">{formatMoney(u.value)}</span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          )}
+
           <div className="kpi-grid">
             <div className="kpi">
               <div className="kpi-label">Total spend</div>
@@ -409,36 +452,72 @@ export default function App() {
             <div className="grid-2">
               <div className="chart-card">
                 <h3>Cost by model</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={pieCostData}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={105}
-                      innerRadius={28}
-                      paddingAngle={2}
-                      label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
-                      labelLine={{ stroke: chrome.tick }}
-                    >
-                      {pieCostData.map((_, i) => (
-                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                      ))}
-                    </Pie>
+                <ResponsiveContainer width="100%" height={costByModelChartHeight}>
+                  <BarChart
+                    layout="vertical"
+                    data={costByModelBarData}
+                    margin={{ top: 8, right: 88, left: 4, bottom: 8 }}
+                    barCategoryGap="12%"
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} horizontal={false} />
+                    <XAxis
+                      type="number"
+                      tick={{ fill: chrome.tick, fontSize: 11 }}
+                      tickFormatter={(v) => `$${v}`}
+                      domain={[0, "auto"]}
+                      axisLine={{ stroke: chrome.axis }}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={148}
+                      tick={{ fill: chrome.tick, fontSize: 10 }}
+                      tickFormatter={(v: string) => (v.length > 22 ? `${v.slice(0, 20)}…` : v)}
+                      interval={0}
+                    />
                     <Tooltip
-                      formatter={(value: number) => formatMoney(value)}
-                      contentStyle={{
-                        background: chrome.tooltipBg,
-                        border: `1px solid ${chrome.tooltipBorder}`,
-                        borderRadius: 10,
-                        color: chrome.tooltipText,
-                        boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                      cursor={{ fill: "rgba(107, 140, 255, 0.06)" }}
+                      content={({ active, payload }) => {
+                        if (!active || !payload?.length) return null;
+                        const row = payload[0].payload as {
+                          name: string;
+                          value: number;
+                          pct: number;
+                        };
+                        return (
+                          <div
+                            style={{
+                              background: chrome.tooltipBg,
+                              border: `1px solid ${chrome.tooltipBorder}`,
+                              borderRadius: 10,
+                              padding: "10px 12px",
+                              fontSize: 13,
+                              boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, color: chrome.tooltipText, marginBottom: 4 }}>
+                              {row.name}
+                            </div>
+                            <div style={{ color: chrome.tooltipText }}>{formatMoney(row.value)}</div>
+                            <div style={{ color: chrome.tooltipMuted, fontSize: 12, marginTop: 4 }}>
+                              {row.pct.toFixed(1)}% of total spend
+                            </div>
+                          </div>
+                        );
                       }}
                     />
-                    <Legend wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }} />
-                  </PieChart>
+                    <Bar dataKey="value" radius={[0, 6, 6, 0]} maxBarSize={28}>
+                      {costByModelBarData.map((_, i) => (
+                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                      ))}
+                      <LabelList
+                        dataKey="value"
+                        position="right"
+                        formatter={(v: number) => formatMoney(v)}
+                        style={{ fill: chrome.tick, fontSize: 11, fontWeight: 500 }}
+                      />
+                    </Bar>
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
 
