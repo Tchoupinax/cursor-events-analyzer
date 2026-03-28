@@ -38,10 +38,19 @@ jobs:
 
       - name: Install and build
         run: |
-          npm install
+          npm ci
           npm run build
         env:
           GITHUB_PAGES_BASE: ${{ steps.base.outputs.path }}
+
+      - name: Verify build output (must be bundled JS, not /src/main.tsx)
+        run: |
+          test -f dist/index.html
+          if grep -q 'src/main.tsx' dist/index.html; then
+            echo "::error::dist/index.html still references dev entry — build is wrong."
+            exit 1
+          fi
+          echo "OK: production bundle in dist/"
 
       - uses: actions/upload-pages-artifact@v3
         with:
