@@ -15,6 +15,7 @@ import {
   CartesianGrid,
   Cell,
   LabelList,
+  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -96,6 +97,25 @@ function formatTokens(n: number): string {
 
 function formatInt(n: number): string {
   return new Intl.NumberFormat().format(Math.round(n));
+}
+
+function formatPct(n: number): string {
+  return `${n.toFixed(1)}%`;
+}
+
+function formatDateLabel(d: Date): string {
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatTimeLabel(d: Date): string {
+  return d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function topWithOther(items: NamedAmount[], top = 8): { name: string; value: number }[] {
@@ -313,12 +333,13 @@ export default function App() {
                       }
                       aria-label={`${rank}. ${u.name}, ${formatMoney(u.value)}, ${pct.toFixed(1)}% of total spend`}
                     >
+                      <span className="leaderboard-fill" aria-hidden style={{ width: `${Math.max(pct, 4)}%` }} />
                       <span className="leaderboard-rank">{rank}</span>
                       <span className="leaderboard-name" title={u.name}>
                         {u.name}
                       </span>
                       <span className="leaderboard-stats">
-                        <span className="leaderboard-pct">{pct.toFixed(1)}%</span>
+                        <span className="leaderboard-pct">{formatPct(pct)}</span>
                         <span className="leaderboard-cost">{formatMoney(u.value)}</span>
                       </span>
                     </li>
@@ -416,9 +437,9 @@ export default function App() {
             </div>
 
             <div className="chart-card">
-              <h3>Daily events (count)</h3>
+              <h3>Daily events by user</h3>
               <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={summary.daily} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <BarChart data={summary.dailyByUser} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
                   <XAxis
                     dataKey="day"
@@ -426,18 +447,86 @@ export default function App() {
                     tickLine={false}
                   />
                   <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} width={40} />
-                  <Tooltip
-                    content={({ active, payload, label }) => (
-                      <CustomTooltip
-                        active={active}
-                        payload={payload as { value: number }[]}
-                        label={label as string}
-                        valueLabel="Events"
-                        chrome={chrome}
-                      />
+                  <Legend
+                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }}
+                    formatter={(value) => (
+                      <span style={{ color: chrome.legendColor }}>
+                        {String(value).length > 22 ? `${String(value).slice(0, 20)}...` : String(value)}
+                      </span>
                     )}
                   />
-                  <Bar dataKey="events" fill="#3dd6c3" radius={[4, 4, 0, 0]} name="Events" />
+                  <Tooltip
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const items = [...payload]
+                        .filter((item) => typeof item.value === "number" && Number(item.value) > 0)
+                        .sort((a, b) => Number(b.value) - Number(a.value));
+
+                      return (
+                        <div
+                          style={{
+                            background: chrome.tooltipBg,
+                            border: `1px solid ${chrome.tooltipBorder}`,
+                            borderRadius: 10,
+                            padding: "10px 12px",
+                            fontSize: 13,
+                            boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                          }}
+                        >
+                          <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>
+                            {label as string}
+                          </div>
+                          {items.map((item) => (
+                            <div
+                              key={String(item.dataKey)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 12,
+                                color: chrome.tooltipText,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  minWidth: 0,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: 999,
+                                    background: item.color,
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                <span title={String(item.name)}>
+                                  {String(item.name).length > 28
+                                    ? `${String(item.name).slice(0, 26)}...`
+                                    : String(item.name)}
+                                </span>
+                              </span>
+                              <span>{formatInt(Number(item.value))}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }}
+                  />
+                  {summary.dailyUserSeries.map((user, i) => (
+                    <Bar
+                      key={user}
+                      dataKey={user}
+                      stackId="events"
+                      fill={CHART_COLORS[i % CHART_COLORS.length]}
+                      radius={i === summary.dailyUserSeries.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                      name={user}
+                    />
+                  ))}
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -555,22 +644,91 @@ export default function App() {
 
             <div className="chart-card">
               <h3>Cost by billing kind</h3>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={summary.byKind} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={summary.byKindUser} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
                   <XAxis dataKey="name" tick={{ fill: chrome.tick, fontSize: 11 }} />
                   <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+                  <Legend
+                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }}
+                    formatter={(value) => (
+                      <span style={{ color: chrome.legendColor }}>
+                        {String(value).length > 22 ? `${String(value).slice(0, 20)}...` : String(value)}
+                      </span>
+                    )}
+                  />
                   <Tooltip
-                    formatter={(v: number) => formatMoney(v)}
-                    contentStyle={{
-                      background: chrome.tooltipBg,
-                      border: `1px solid ${chrome.tooltipBorder}`,
-                      borderRadius: 10,
-                      color: chrome.tooltipText,
-                      boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const items = [...payload]
+                        .filter((item) => typeof item.value === "number" && Number(item.value) > 0)
+                        .sort((a, b) => Number(b.value) - Number(a.value));
+
+                      return (
+                        <div
+                          style={{
+                            background: chrome.tooltipBg,
+                            border: `1px solid ${chrome.tooltipBorder}`,
+                            borderRadius: 10,
+                            padding: "10px 12px",
+                            fontSize: 13,
+                            boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                          }}
+                        >
+                          <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>
+                            {label as string}
+                          </div>
+                          {items.map((item) => (
+                            <div
+                              key={String(item.dataKey)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 12,
+                                color: chrome.tooltipText,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  minWidth: 0,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: 999,
+                                    background: item.color,
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                <span title={String(item.name)}>
+                                  {String(item.name).length > 28
+                                    ? `${String(item.name).slice(0, 26)}...`
+                                    : String(item.name)}
+                                </span>
+                              </span>
+                              <span>{formatMoney(Number(item.value))}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
                     }}
                   />
-                  <Bar dataKey="value" fill="#f0b429" radius={[4, 4, 0, 0]} />
+                  {summary.kindUserSeries.map((user, i) => (
+                    <Bar
+                      key={user}
+                      dataKey={user}
+                      stackId="billing-kind"
+                      fill={CHART_COLORS[i % CHART_COLORS.length]}
+                      radius={i === summary.kindUserSeries.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                      name={user}
+                    />
+                  ))}
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -582,41 +740,60 @@ export default function App() {
               Users ranked by total cost in this file, and the single most expensive rows — useful
               to spot one-off heavy jobs.
             </p>
-            <div className="grid-2">
-              <div>
-                <h3 className="section-title" style={{ fontSize: "0.95rem" }}>
-                  Cost by user
-                </h3>
+            <div className="grid-2 grid-2--tables">
+              <div className="chart-card table-card">
+                <div className="table-card-header">
+                  <h3 className="section-title table-card-title">Cost by user</h3>
+                  <p className="table-card-desc">Ranked by total spend with share of overall cost.</p>
+                </div>
                 <div className="table-wrap">
-                  <table>
+                  <table className="data-table">
                     <thead>
                       <tr>
+                        <th className="num">#</th>
                         <th>User</th>
+                        <th>Share</th>
                         <th>Cost</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {summary.byUserCost.map((u) => (
+                      {summary.byUserCost.map((u, i) => {
+                        const pct = summary.totalCost > 0 ? (u.value / summary.totalCost) * 100 : 0;
+                        return (
                         <tr key={u.name}>
-                          <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {u.name}
+                          <td className="num cell-rank">
+                            <span className="rank-badge">{i + 1}</span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary" title={u.name}>
+                              {u.name}
+                            </span>
+                          </td>
+                          <td className="cell-share">
+                            <span className="cell-share-value">{formatPct(pct)}</span>
+                            <span className="cell-share-bar" aria-hidden>
+                              <span className="cell-share-bar-fill" style={{ width: `${pct}%` }} />
+                            </span>
                           </td>
                           <td className="num">{formatMoney(u.value)}</td>
                         </tr>
-                      ))}
+                      )})}
                     </tbody>
                   </table>
                 </div>
               </div>
-              <div>
-                <h3 className="section-title" style={{ fontSize: "0.95rem" }}>
-                  Highest-cost events
-                </h3>
+              <div className="chart-card table-card">
+                <div className="table-card-header">
+                  <h3 className="section-title table-card-title">Highest-cost events</h3>
+                  <p className="table-card-desc">Most expensive individual rows in the uploaded export.</p>
+                </div>
                 <div className="table-wrap">
-                  <table>
+                  <table className="data-table">
                     <thead>
                       <tr>
+                        <th className="num">#</th>
                         <th>When</th>
+                        <th>User</th>
                         <th>Model</th>
                         <th>Cost</th>
                       </tr>
@@ -624,9 +801,25 @@ export default function App() {
                     <tbody>
                       {summary.topExpensive.map((r, i) => (
                         <tr key={i}>
-                          <td className="num">{r.date.toLocaleString()}</td>
-                          <td style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {r.model}
+                          <td className="num cell-rank">
+                            <span className="rank-badge">{i + 1}</span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary">{formatDateLabel(r.date)}</span>
+                            <span className="cell-secondary">{formatTimeLabel(r.date)}</span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary" title={r.user}>
+                              {r.user}
+                            </span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary" title={r.model}>
+                              {r.model}
+                            </span>
+                            <span className="cell-secondary">
+                              <span className="badge">{r.kind}</span>
+                            </span>
                           </td>
                           <td className="num">{formatMoney(r.cost)}</td>
                         </tr>

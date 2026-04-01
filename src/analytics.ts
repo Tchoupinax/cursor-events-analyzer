@@ -1,4 +1,4 @@
-import type { DailyPoint, NamedAmount, Summary, UsageRow } from "./types";
+import type { DailyPoint, DailyUserPoint, KindUserPoint, NamedAmount, Summary, UsageRow } from "./types";
 
 function dayKey(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -73,6 +73,65 @@ export function buildSummary(rows: UsageRow[]): Summary {
   const byModelTokens = aggregate(sorted, (r) => r.model, (r) => r.totalTokens);
   const byKind = aggregate(sorted, (r) => r.kind, (r) => r.cost);
   const byUserCost = aggregate(sorted, (r) => r.user, (r) => r.cost);
+  const byUserEvents = aggregate(sorted, (r) => r.user, () => 1);
+  const dailyUserSeries = byUserEvents.slice(0, 6).map((u) => u.name);
+  const hasOtherUsers = byUserEvents.length > dailyUserSeries.length;
+  const dailyByUserMap = new Map<string, Map<string, number>>();
+
+  for (const r of sorted) {
+    const day = dayKey(r.date);
+    const bucket = dailyByUserMap.get(day) ?? new Map<string, number>();
+    const userKey = dailyUserSeries.includes(r.user) ? r.user : "Other";
+    bucket.set(userKey, (bucket.get(userKey) ?? 0) + 1);
+    dailyByUserMap.set(day, bucket);
+  }
+
+  const dailyByUser: DailyUserPoint[] = [...dailyByUserMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, userCounts]) => {
+      const point: DailyUserPoint = { day, total: 0 };
+      for (const user of dailyUserSeries) {
+        const count = userCounts.get(user) ?? 0;
+        point[user] = count;
+        point.total += count;
+      }
+      if (hasOtherUsers) {
+        const otherCount = userCounts.get("Other") ?? 0;
+        point.Other = otherCount;
+        point.total += otherCount;
+      }
+      return point;
+    });
+
+  const kindUserSeries = byUserCost.slice(0, 6).map((u) => u.name);
+  const hasOtherKindUsers = byUserCost.length > kindUserSeries.length;
+  const byKindUserMap = new Map<string, Map<string, number>>();
+
+  for (const r of sorted) {
+    const bucket = byKindUserMap.get(r.kind) ?? new Map<string, number>();
+    const userKey = kindUserSeries.includes(r.user) ? r.user : "Other";
+    bucket.set(userKey, (bucket.get(userKey) ?? 0) + r.cost);
+    byKindUserMap.set(r.kind, bucket);
+  }
+
+  const byKindUser: KindUserPoint[] = byKind.map((kind) => {
+    const userCosts = byKindUserMap.get(kind.name) ?? new Map<string, number>();
+    const point: KindUserPoint = { name: kind.name, total: 0 };
+
+    for (const user of kindUserSeries) {
+      const cost = userCosts.get(user) ?? 0;
+      point[user] = cost;
+      point.total += cost;
+    }
+
+    if (hasOtherKindUsers) {
+      const otherCost = userCosts.get("Other") ?? 0;
+      point.Other = otherCost;
+      point.total += otherCost;
+    }
+
+    return point;
+  });
 
   const topExpensive = [...sorted].sort((a, b) => b.cost - a.cost).slice(0, 8);
 
@@ -88,8 +147,12 @@ export function buildSummary(rows: UsageRow[]): Summary {
     byModelCost,
     byModelTokens,
     byKind,
+    byKindUser,
     byUserCost,
     daily,
+    dailyByUser,
+    dailyUserSeries: hasOtherUsers ? [...dailyUserSeries, "Other"] : dailyUserSeries,
+    kindUserSeries: hasOtherKindUsers ? [...kindUserSeries, "Other"] : kindUserSeries,
     topExpensive,
   };
 }

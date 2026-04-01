@@ -19,6 +19,18 @@ export type DailyPoint = {
   events: number;
 };
 
+export type DailyUserPoint = {
+  day: string;
+  total: number;
+  [user: string]: string | number;
+};
+
+export type KindUserPoint = {
+  name: string;
+  total: number;
+  [user: string]: string | number;
+};
+
 export type NamedAmount = { name: string; value: number };
 
 export type Summary = {
@@ -33,7 +45,11 @@ export type Summary = {
   byModelCost: NamedAmount[];
   byModelTokens: NamedAmount[];
   byKind: NamedAmount[];
+  byKindUser: KindUserPoint[];
   byUserCost: NamedAmount[];
   daily: DailyPoint[];
+  dailyByUser: DailyUserPoint[];
+  dailyUserSeries: string[];
+  kindUserSeries: string[];
   topExpensive: UsageRow[];
 };
