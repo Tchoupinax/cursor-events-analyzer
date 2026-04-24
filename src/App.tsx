@@ -305,6 +305,10 @@ export default function App() {
           </div>
 
           {fileName && <p className="file-name">Loaded: {fileName}</p>}
+
+          <p className="privacy-note">
+            <span aria-hidden>🔒</span> Your file stays on your machine — everything is processed locally in your browser.
+          </p>
         </>
       )}
 
@@ -856,6 +860,12 @@ export default function App() {
               </dd>
             </dl>
           </div>
+
+          <footer className="app-footer">
+            <p>
+              <span aria-hidden>🔒</span> All processing happens locally in your browser. Your CSV is never uploaded to any server.
+            </p>
+          </footer>
         </>
       )}
     </div>
