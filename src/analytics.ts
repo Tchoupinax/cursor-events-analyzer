@@ -1,7 +1,34 @@
-import type { DailyPoint, DailyUserPoint, KindUserPoint, NamedAmount, Summary, UsageRow } from "./types";
+import type {
+  DailyPoint,
+  DailyUserPoint,
+  KindUserPoint,
+  NamedAmount,
+  Summary,
+  UsageRow,
+  WorkStats,
+} from "./types";
+
+function localDayKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function dayKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  return localDayKey(d);
+}
+
+function parseLocalDay(day: string): Date {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0);
+}
+
+function weekStartKey(d: Date): string {
+  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return localDayKey(date);
 }
 
 function sortNamed(arr: NamedAmount[], by: "value" | "name" = "value"): NamedAmount[] {
@@ -12,6 +39,112 @@ function sortNamed(arr: NamedAmount[], by: "value" | "name" = "value"): NamedAmo
     copy.sort((a, b) => a.name.localeCompare(b.name));
   }
   return copy;
+}
+
+function daySpanHours(times: Date[]): number {
+  if (times.length === 0) return 0;
+  if (times.length === 1) return 0.25;
+  const min = Math.min(...times.map((t) => t.getTime()));
+  const max = Math.max(...times.map((t) => t.getTime()));
+  return Math.max((max - min) / 3_600_000, 0.25);
+}
+
+function formatDayLabel(day: string): string {
+  return parseLocalDay(day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatWeekLabel(weekStart: string): string {
+  const start = parseLocalDay(weekStart);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const startLabel = start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const endLabel = end.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${startLabel} - ${endLabel}`;
+}
+
+function formatMonthLabel(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+function computeWorkStats(rows: UsageRow[]): WorkStats {
+  const dayGroups = new Map<string, Date[]>();
+  for (const r of rows) {
+    const k = dayKey(r.date);
+    const arr = dayGroups.get(k) ?? [];
+    arr.push(r.date);
+    dayGroups.set(k, arr);
+  }
+
+  let totalActiveHours = 0;
+  for (const [, times] of dayGroups) {
+    totalActiveHours += daySpanHours(times);
+  }
+
+  const activeDays = dayGroups.size;
+  const avgHoursPerDay = activeDays > 0 ? totalActiveHours / activeDays : 0;
+
+  const byDay = [...dayGroups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, times]) => ({
+      day,
+      label: formatDayLabel(day),
+      events: times.length,
+      hours: daySpanHours(times),
+    }));
+
+  const weekMap = new Map<string, { events: number; days: Set<string>; hours: number }>();
+  for (const [day, times] of dayGroups) {
+    const week = weekStartKey(parseLocalDay(day));
+    const cur = weekMap.get(week) ?? { events: 0, days: new Set<string>(), hours: 0 };
+    cur.events += times.length;
+    cur.days.add(day);
+    cur.hours += daySpanHours(times);
+    weekMap.set(week, cur);
+  }
+  const byWeek = [...weekMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([week, v]) => ({
+      week,
+      label: formatWeekLabel(week),
+      events: v.events,
+      activeDays: v.days.size,
+      hours: v.hours,
+    }));
+
+  const monthMap = new Map<string, { events: number; days: Set<string>; hours: number }>();
+  for (const r of rows) {
+    const monthKey = dayKey(r.date).slice(0, 7);
+    const day = dayKey(r.date);
+    const cur = monthMap.get(monthKey) ?? { events: 0, days: new Set<string>(), hours: 0 };
+    cur.events += 1;
+    cur.days.add(day);
+    monthMap.set(monthKey, cur);
+  }
+  for (const [day, times] of dayGroups) {
+    const monthKey = day.slice(0, 7);
+    const cur = monthMap.get(monthKey);
+    if (!cur) continue;
+    cur.hours += daySpanHours(times);
+  }
+  const byMonth = [...monthMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, v]) => ({
+      month,
+      label: formatMonthLabel(month),
+      events: v.events,
+      activeDays: v.days.size,
+      hours: v.hours,
+    }));
+
+  return {
+    activeDays,
+    totalActiveHours,
+    avgHoursPerDay,
+    byDay,
+    byWeek,
+    byMonth,
+  };
 }
 
 function aggregate(
@@ -154,5 +287,6 @@ export function buildSummary(rows: UsageRow[]): Summary {
     dailyUserSeries: hasOtherUsers ? [...dailyUserSeries, "Other"] : dailyUserSeries,
     kindUserSeries: hasOtherKindUsers ? [...kindUserSeries, "Other"] : kindUserSeries,
     topExpensive,
+    workStats: computeWorkStats(sorted),
   };
 }

@@ -59,8 +59,74 @@ function parseNum(v: string | undefined): number {
 }
 
 function parseDate(s: string): Date | null {
-  const d = new Date(s);
+  const trimmed = s.replace(/^"|"$/g, "").trim();
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (dateOnly) {
+    return new Date(+dateOnly[1], +dateOnly[2] - 1, +dateOnly[3], 12, 0, 0);
+  }
+  const d = new Date(trimmed);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function isAnalyticsFormat(headers: string[]): boolean {
+  const byNorm = new Map(headers.map((h) => [normKey(h), h]));
+  return (
+    byNorm.has("chats composer requests") &&
+    byNorm.has("agent lines total lines suggested")
+  );
+}
+
+function parseAnalyticsRows(rows: string[][], headers: string[]): UsageRow[] {
+  const idx = (name: string) => headers.findIndex((h) => normKey(h) === normKey(name));
+  const iDate = idx("Date");
+  const iComposer = idx("Chats Composer Requests");
+  const iAgent = idx("Chats Agent Requests");
+  const iLines = idx("Agent Lines Total Lines Accepted");
+  const iTabs = idx("Tabs Total Accepts");
+
+  if (iDate < 0) return [];
+
+  const out: UsageRow[] = [];
+
+  for (let r = 1; r < rows.length; r++) {
+    const line = rows[r];
+    const dateStr = String(line[iDate] ?? "").trim();
+    if (!dateStr) continue;
+
+    const date = parseDate(dateStr);
+    if (!date) continue;
+
+    const activity =
+      (iComposer >= 0 ? parseNum(line[iComposer]) : 0) +
+      (iAgent >= 0 ? parseNum(line[iAgent]) : 0) +
+      (iTabs >= 0 ? parseNum(line[iTabs]) : 0);
+    const tokens = iLines >= 0 ? parseNum(line[iLines]) : 0;
+
+    if (activity <= 0 && tokens <= 0) continue;
+
+    const eventCount = Math.max(Math.round(activity), 1);
+    const tokensPerEvent = eventCount > 0 ? Math.max(tokens / eventCount, 0) : 0;
+
+    for (let i = 0; i < eventCount; i++) {
+      const hour = 9 + Math.floor((i / Math.max(eventCount - 1, 1)) * 9);
+      const minute = (i * 13) % 60;
+      out.push({
+        date: new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour, minute),
+        user: "Team",
+        kind: "analytics",
+        model: "(unknown)",
+        maxMode: "",
+        inputCacheWrite: 0,
+        inputNoCacheWrite: 0,
+        cacheRead: 0,
+        outputTokens: 0,
+        totalTokens: tokensPerEvent,
+        cost: 0,
+      });
+    }
+  }
+
+  return out;
 }
 
 export type ParseResult =
@@ -84,6 +150,15 @@ export function parseUsageCsv(raw: string): ParseResult {
   }
 
   const headers = rows[0].map((h) => String(h ?? ""));
+
+  if (isAnalyticsFormat(headers)) {
+    const out = parseAnalyticsRows(rows, headers);
+    if (out.length === 0) {
+      return { ok: false, error: "No active days found in analytics export." };
+    }
+    return { ok: true, rows: out, rawHeaders: headers };
+  }
+
   const col = buildColumnMap(headers);
   if (!col) {
     return {

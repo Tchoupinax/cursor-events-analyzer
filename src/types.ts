@@ -33,6 +33,38 @@ export type KindUserPoint = {
 
 export type NamedAmount = { name: string; value: number };
 
+export type WorkDayPoint = {
+  day: string;
+  label: string;
+  events: number;
+  hours: number;
+};
+
+export type WorkWeekPoint = {
+  week: string;
+  label: string;
+  events: number;
+  activeDays: number;
+  hours: number;
+};
+
+export type WorkMonthPoint = {
+  month: string;
+  label: string;
+  events: number;
+  activeDays: number;
+  hours: number;
+};
+
+export type WorkStats = {
+  activeDays: number;
+  totalActiveHours: number;
+  avgHoursPerDay: number;
+  byDay: WorkDayPoint[];
+  byWeek: WorkWeekPoint[];
+  byMonth: WorkMonthPoint[];
+};
+
 export type Summary = {
   rowCount: number;
   dateMin: Date | null;
@@ -52,4 +84,5 @@ export type Summary = {
   dailyUserSeries: string[];
   kindUserSeries: string[];
   topExpensive: UsageRow[];
+  workStats: WorkStats;
 };
