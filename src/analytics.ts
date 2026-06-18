@@ -41,12 +41,30 @@ function sortNamed(arr: NamedAmount[], by: "value" | "name" = "value"): NamedAmo
   return copy;
 }
 
-function daySpanHours(times: Date[]): number {
+const SESSION_GAP_MS = 30 * 60 * 1000;
+const MIN_SESSION_MS = 0.25 * 3_600_000;
+
+function sessionHours(times: Date[]): number {
   if (times.length === 0) return 0;
-  if (times.length === 1) return 0.25;
-  const min = Math.min(...times.map((t) => t.getTime()));
-  const max = Math.max(...times.map((t) => t.getTime()));
-  return Math.max((max - min) / 3_600_000, 0.25);
+  const sorted = [...times].sort((a, b) => a.getTime() - b.getTime());
+
+  let totalMs = 0;
+  let sessionStart = sorted[0].getTime();
+  let sessionEnd = sessionStart;
+
+  for (let i = 1; i < sorted.length; i++) {
+    const t = sorted[i].getTime();
+    if (t - sessionEnd <= SESSION_GAP_MS) {
+      sessionEnd = t;
+    } else {
+      totalMs += Math.max(sessionEnd - sessionStart, MIN_SESSION_MS);
+      sessionStart = t;
+      sessionEnd = t;
+    }
+  }
+
+  totalMs += Math.max(sessionEnd - sessionStart, MIN_SESSION_MS);
+  return totalMs / 3_600_000;
 }
 
 function formatDayLabel(day: string): string {
@@ -78,7 +96,7 @@ function computeWorkStats(rows: UsageRow[]): WorkStats {
 
   let totalActiveHours = 0;
   for (const [, times] of dayGroups) {
-    totalActiveHours += daySpanHours(times);
+    totalActiveHours += sessionHours(times);
   }
 
   const activeDays = dayGroups.size;
@@ -90,7 +108,7 @@ function computeWorkStats(rows: UsageRow[]): WorkStats {
       day,
       label: formatDayLabel(day),
       events: times.length,
-      hours: daySpanHours(times),
+      hours: sessionHours(times),
     }));
 
   const weekMap = new Map<string, { events: number; days: Set<string>; hours: number }>();
@@ -99,7 +117,7 @@ function computeWorkStats(rows: UsageRow[]): WorkStats {
     const cur = weekMap.get(week) ?? { events: 0, days: new Set<string>(), hours: 0 };
     cur.events += times.length;
     cur.days.add(day);
-    cur.hours += daySpanHours(times);
+    cur.hours += sessionHours(times);
     weekMap.set(week, cur);
   }
   const byWeek = [...weekMap.entries()]
@@ -125,7 +143,7 @@ function computeWorkStats(rows: UsageRow[]): WorkStats {
     const monthKey = day.slice(0, 7);
     const cur = monthMap.get(monthKey);
     if (!cur) continue;
-    cur.hours += daySpanHours(times);
+    cur.hours += sessionHours(times);
   }
   const byMonth = [...monthMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))

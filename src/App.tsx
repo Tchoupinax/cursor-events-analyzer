@@ -1032,8 +1032,9 @@ export default function App() {
               </dd>
               <dt>Work days &amp; hours</dt>
               <dd>
-                Active hours estimate the span from the first to last event on each calendar day
-                (minimum 15 minutes for single events). Day shows each calendar day, Week groups
+                Active hours group prompts into sessions. A new session starts after 30 minutes
+                with no prompts. Each session counts from its first to last prompt (minimum 15
+                minutes for a single prompt). Day shows each calendar day, Week groups
                 Monday-Sunday buckets, and Month rolls up full calendar months across your export.
               </dd>
               <dt>Privacy</dt>
