@@ -60,6 +60,7 @@ const CHART_CHROME = {
 } as const;
 
 type ThemeMode = "light" | "dark";
+type WorkStatsGranularity = "day" | "week" | "month";
 
 const THEME_STORAGE_KEY = "cursor-events-analyzer-theme";
 
@@ -101,6 +102,11 @@ function formatInt(n: number): string {
 
 function formatPct(n: number): string {
   return `${n.toFixed(1)}%`;
+}
+
+function formatHours(h: number): string {
+  if (h < 1) return `${Math.round(h * 60)}m`;
+  return `${h.toFixed(1)}h`;
 }
 
 function formatDateLabel(d: Date): string {
@@ -168,6 +174,8 @@ export default function App() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [rows, setRows] = useState<UsageRow[] | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [showWorkStats, setShowWorkStats] = useState(false);
+  const [workStatsGranularity, setWorkStatsGranularity] = useState<WorkStatsGranularity>("month");
 
   const chrome = CHART_CHROME[theme];
 
@@ -240,6 +248,15 @@ export default function App() {
   }, [summary]);
 
   const costByModelChartHeight = Math.min(560, Math.max(260, 24 + costByModelBarData.length * 38));
+
+  const workStatsChartData = useMemo(() => {
+    if (!summary) return [];
+    if (workStatsGranularity === "day") return summary.workStats.byDay;
+    if (workStatsGranularity === "week") return summary.workStats.byWeek;
+    return summary.workStats.byMonth;
+  }, [summary, workStatsGranularity]);
+
+  const workStatsChartHeight = Math.min(320, Math.max(260, 220 + Math.min(workStatsChartData.length, 40) * 0.5));
 
   return (
     <div className="app">
@@ -835,6 +852,165 @@ export default function App() {
             </div>
           </section>
 
+          <section className="section work-stats-section">
+            <div className="work-stats-header">
+              <div className="work-stats-heading">
+                <h2 className="section-title">Work days &amp; hours</h2>
+                <p className="section-desc">
+                  Active days and estimated session hours over the full period. Switch Day, Week, or
+                  Month to change the time bucket.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="visibility-toggle"
+                onClick={() => setShowWorkStats((v) => !v)}
+                aria-label={showWorkStats ? "Hide work stats" : "Show work stats"}
+                aria-pressed={showWorkStats}
+                title={showWorkStats ? "Hide work stats" : "Show work stats"}
+              >
+                <span className="visibility-toggle-icon" aria-hidden>
+                  {showWorkStats ? (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                      <path d="M1 1l22 22" />
+                      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                    </svg>
+                  )}
+                </span>
+              </button>
+            </div>
+
+            {showWorkStats && (
+              <>
+                <div className="work-stats-kpis">
+                  <div className="kpi">
+                    <div className="kpi-label">Active days</div>
+                    <div className="kpi-value">{formatInt(summary.workStats.activeDays)}</div>
+                    <div className="kpi-sub">Days with at least one event</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpi-label">Active hours</div>
+                    <div className="kpi-value">{formatHours(summary.workStats.totalActiveHours)}</div>
+                    <div className="kpi-sub">First-to-last span per day</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpi-label">Avg per day</div>
+                    <div className="kpi-value">{formatHours(summary.workStats.avgHoursPerDay)}</div>
+                    <div className="kpi-sub">On active days only</div>
+                  </div>
+                </div>
+
+                <div className="granularity-toggle" role="tablist" aria-label="Work stats granularity">
+                  {(["day", "week", "month"] as const).map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      role="tab"
+                      aria-selected={workStatsGranularity === g}
+                      className={workStatsGranularity === g ? "granularity-btn is-active" : "granularity-btn"}
+                      onClick={() => setWorkStatsGranularity(g)}
+                    >
+                      {g === "day" ? "Day" : g === "week" ? "Week" : "Month"}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="chart-card">
+                  <h3>
+                    {workStatsGranularity === "day"
+                      ? "Daily activity"
+                      : workStatsGranularity === "week"
+                        ? "Weekly activity"
+                        : "Monthly activity"}
+                  </h3>
+                  <ResponsiveContainer width="100%" height={workStatsChartHeight}>
+                    <BarChart data={workStatsChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
+                      <XAxis
+                        dataKey="label"
+                        tick={{ fill: chrome.tick, fontSize: 10 }}
+                        tickLine={false}
+                        interval={workStatsGranularity === "day" ? "preserveStartEnd" : 0}
+                        minTickGap={workStatsGranularity === "day" ? 28 : 8}
+                      />
+                      <YAxis
+                        yAxisId="events"
+                        tick={{ fill: chrome.tick, fontSize: 11 }}
+                        width={40}
+                      />
+                      <YAxis
+                        yAxisId="hours"
+                        orientation="right"
+                        tick={{ fill: chrome.tick, fontSize: 11 }}
+                        tickFormatter={(v) => formatHours(v)}
+                        width={48}
+                      />
+                      <Legend wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }} />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload?.length) return null;
+                          const row = payload[0]?.payload as {
+                            events: number;
+                            hours: number;
+                            activeDays?: number;
+                          };
+                          return (
+                            <div
+                              style={{
+                                background: chrome.tooltipBg,
+                                border: `1px solid ${chrome.tooltipBorder}`,
+                                borderRadius: 10,
+                                padding: "10px 12px",
+                                fontSize: 13,
+                                boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                              }}
+                            >
+                              <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>
+                                {label as string}
+                              </div>
+                              <div style={{ color: chrome.tooltipText }}>{formatInt(row.events)} events</div>
+                              {row.activeDays != null && (
+                                <div style={{ color: chrome.tooltipText, marginTop: 4 }}>
+                                  {formatInt(row.activeDays)} active days
+                                </div>
+                              )}
+                              <div style={{ color: chrome.tooltipText, marginTop: 4 }}>
+                                {formatHours(row.hours)} active
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar
+                        yAxisId="events"
+                        dataKey="events"
+                        fill="#6b8cff"
+                        radius={[4, 4, 0, 0]}
+                        name="Events"
+                        maxBarSize={workStatsGranularity === "day" ? 6 : 28}
+                      />
+                      <Bar
+                        yAxisId="hours"
+                        dataKey="hours"
+                        fill="#f0b429"
+                        radius={[4, 4, 0, 0]}
+                        name="Active hours"
+                        maxBarSize={workStatsGranularity === "day" ? 6 : 28}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+          </section>
+
           <div className="explain">
             <h2>How to read these metrics</h2>
             <dl>
@@ -853,6 +1029,12 @@ export default function App() {
               <dd>
                 Many small events can cost less than one huge composer run. Compare the two charts
                 to see whether spend is steady or driven by occasional large sessions.
+              </dd>
+              <dt>Work days &amp; hours</dt>
+              <dd>
+                Active hours estimate the span from the first to last event on each calendar day
+                (minimum 15 minutes for single events). Day shows each calendar day, Week groups
+                Monday-Sunday buckets, and Month rolls up full calendar months across your export.
               </dd>
               <dt>Privacy</dt>
               <dd>
