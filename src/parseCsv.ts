@@ -1,8 +1,8 @@
 import Papa from "papaparse";
-import type { UsageRow } from "./types";
+import type { ExportSource, UsageRow } from "./types";
 
 function normKey(s: string): string {
-  return s.trim().toLowerCase().replace(/\s+/g, " ");
+  return s.trim().toLowerCase().replace(/[_\s]+/g, " ");
 }
 
 /** Map common header variants to canonical keys */
@@ -76,6 +76,61 @@ function isAnalyticsFormat(headers: string[]): boolean {
   );
 }
 
+function isDevinFormat(headers: string[]): boolean {
+  const byNorm = new Map(headers.map((h) => [normKey(h), h]));
+  const has = (...names: string[]) => names.every((name) => byNorm.has(normKey(name)));
+  return has("session_name", "session_id", "created_at", "acu_used", "overage_dollars");
+}
+
+function devinSessionAcu(acuUsed: number, overage: number): number {
+  if (acuUsed > 0) return acuUsed;
+  // Recent Devin exports often leave acu_used at 0 and bill via overage instead.
+  return overage > 0 ? overage : 0;
+}
+
+function parseDevinRows(rows: string[][], headers: string[]): UsageRow[] {
+  const idx = (name: string) => headers.findIndex((h) => normKey(h) === normKey(name));
+  const iName = idx("session_name");
+  const iCreated = idx("created_at");
+  const iAcu = idx("acu_used");
+  const iOverage = idx("overage_dollars");
+
+  if (iCreated < 0) return [];
+
+  const out: UsageRow[] = [];
+
+  for (let r = 1; r < rows.length; r++) {
+    const line = rows[r];
+    const dateStr = String(line[iCreated] ?? "").trim();
+    if (!dateStr) continue;
+
+    const date = parseDate(dateStr);
+    if (!date) continue;
+
+    const sessionName = String(line[iName] ?? "").replace(/^"|"$/g, "").trim();
+    const acuUsed = iAcu >= 0 ? parseNum(line[iAcu]) : 0;
+    const overage = iOverage >= 0 ? parseNum(line[iOverage]) : 0;
+    const sessionAcu = devinSessionAcu(acuUsed, overage);
+
+    out.push({
+      date,
+      user: "Team",
+      kind: "session",
+      model: "Devin",
+      maxMode: "",
+      inputCacheWrite: 0,
+      inputNoCacheWrite: 0,
+      cacheRead: 0,
+      outputTokens: 0,
+      totalTokens: sessionAcu,
+      cost: overage,
+      label: sessionName || undefined,
+    });
+  }
+
+  return out;
+}
+
 function parseAnalyticsRows(rows: string[][], headers: string[]): UsageRow[] {
   const idx = (name: string) => headers.findIndex((h) => normKey(h) === normKey(name));
   const iDate = idx("Date");
@@ -130,7 +185,7 @@ function parseAnalyticsRows(rows: string[][], headers: string[]): UsageRow[] {
 }
 
 export type ParseResult =
-  | { ok: true; rows: UsageRow[]; rawHeaders: string[] }
+  | { ok: true; rows: UsageRow[]; rawHeaders: string[]; source: ExportSource }
   | { ok: false; error: string };
 
 export function parseUsageCsv(raw: string): ParseResult {
@@ -156,7 +211,15 @@ export function parseUsageCsv(raw: string): ParseResult {
     if (out.length === 0) {
       return { ok: false, error: "No active days found in analytics export." };
     }
-    return { ok: true, rows: out, rawHeaders: headers };
+    return { ok: true, rows: out, rawHeaders: headers, source: "cursor-analytics" };
+  }
+
+  if (isDevinFormat(headers)) {
+    const out = parseDevinRows(rows, headers);
+    if (out.length === 0) {
+      return { ok: false, error: "No valid Devin sessions found in export." };
+    }
+    return { ok: true, rows: out, rawHeaders: headers, source: "devin" };
   }
 
   const col = buildColumnMap(headers);
@@ -210,5 +273,5 @@ export function parseUsageCsv(raw: string): ParseResult {
     return { ok: false, error: "No valid rows with parseable dates." };
   }
 
-  return { ok: true, rows: out, rawHeaders: headers };
+  return { ok: true, rows: out, rawHeaders: headers, source: "cursor" };
 }

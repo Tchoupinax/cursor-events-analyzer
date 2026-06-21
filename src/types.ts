@@ -1,3 +1,5 @@
+export type ExportSource = "cursor" | "cursor-analytics" | "devin";
+
 export type UsageRow = {
   date: Date;
   user: string;
@@ -10,6 +12,8 @@ export type UsageRow = {
   outputTokens: number;
   totalTokens: number;
   cost: number;
+  /** Session title or other row label (e.g. Devin session name). */
+  label?: string;
 };
 
 export type DailyPoint = {
