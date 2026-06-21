@@ -1,19 +1,22 @@
-# Cursor usage analyzer
+# Cursor & Devin usage analyzer
 
-A small web app that turns your **Cursor team usage CSV** into charts and totals: spend over time, cost by model, tokens, and more. Everything runs **in the browser**—your file never leaves your machine.
+A small web app that turns your **Cursor team usage CSV** or **Devin sessions export** into charts and totals: spend over time, cost by model, tokens/ACU, and more. Everything runs **in the browser**—your file never leaves your machine.
 
 ---
 
 ### What it does
 
-- Parses the usage export (dates, users, models, tokens, cost).
+- Parses Cursor usage exports (dates, users, models, tokens, cost) and Devin session exports (ACU, overage).
+- Import **multiple CSV files** at once; they are merged in the dashboard.
+- Files are saved in **IndexedDB** in your browser — reopen the app without re-uploading. Manage them from the **Files** sidebar.
 - Shows KPIs and charts: daily cost, events, cost by model, billing kind, top users, and the priciest single requests.
 - Supports **light** and **dark** theme (preference is saved locally).
 
 ### Get your CSV
 
-1. Open [Cursor billing & usage](https://cursor.com/dashboard/billing).
-2. Download or export your usage data as **CSV** (same format as the dashboard export).
+**Cursor:** open [Cursor billing & usage](https://cursor.com/dashboard/billing) and download your usage data as **CSV**.
+
+**Devin:** export your sessions CSV (columns: `session_name`, `session_id`, `created_at`, `acu_used`, `overage_dollars`, etc.).
 
 ### Run locally
 

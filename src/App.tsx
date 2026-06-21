@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -22,8 +23,11 @@ import {
   YAxis,
 } from "recharts";
 import { buildSummary } from "./analytics";
+import { deleteStoredFile, listStoredFiles, saveStoredFile, type StoredFile } from "./fileStore";
+import ImportedFilesSidebar from "./ImportedFilesSidebar";
+import { mergeStoredFiles } from "./mergeImports";
 import { parseUsageCsv } from "./parseCsv";
-import type { NamedAmount, UsageRow } from "./types";
+import type { ExportSource, NamedAmount } from "./types";
 
 const CHART_COLORS = [
   "#6b8cff",
@@ -124,6 +128,25 @@ function formatTimeLabel(d: Date): string {
   });
 }
 
+function readFileText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error(`Failed to read ${file.name}`));
+    reader.readAsText(file);
+  });
+}
+
+function isCsvFile(file: File): boolean {
+  return file.type === "text/csv" || file.name.toLowerCase().endsWith(".csv");
+}
+
+function appTitle(source: ExportSource | "mixed" | null): string {
+  if (source === "devin") return "Devin usage analyzer";
+  if (source === "mixed") return "Usage analyzer";
+  return "Cursor usage analyzer";
+}
+
 function topWithOther(items: NamedAmount[], top = 8): { name: string; value: number }[] {
   if (items.length <= top) return items.map((x) => ({ ...x }));
   const head = items.slice(0, top);
@@ -171,9 +194,9 @@ function CustomTooltip({
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => getPreferredTheme());
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [rows, setRows] = useState<UsageRow[] | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
+  const [storedFiles, setStoredFiles] = useState<StoredFile[]>([]);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showWorkStats, setShowWorkStats] = useState(false);
   const [workStatsGranularity, setWorkStatsGranularity] = useState<WorkStatsGranularity>("month");
 
@@ -192,29 +215,80 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const summary = useMemo(() => (rows?.length ? buildSummary(rows) : null), [rows]);
-
-  const loadText = useCallback((text: string, name: string) => {
-    const result = parseUsageCsv(text);
-    if (!result.ok) {
-      setParseError(result.error);
-      setRows(null);
-      setFileName(name);
-      return;
-    }
-    setParseError(null);
-    setRows(result.rows);
-    setFileName(name);
+  const refreshStoredFiles = useCallback(async () => {
+    const files = await listStoredFiles();
+    setStoredFiles(files);
   }, []);
 
-  const onFile = (f: File | null) => {
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result ?? "");
-      loadText(text, f.name);
-    };
-    reader.readAsText(f);
+  useEffect(() => {
+    void refreshStoredFiles();
+  }, [refreshStoredFiles]);
+
+  const merged = useMemo(() => mergeStoredFiles(storedFiles), [storedFiles]);
+  const rows = merged.rows.length > 0 ? merged.rows : null;
+  const exportSource = merged.source;
+  const parseErrors = useMemo(
+    () => [...importErrors, ...merged.errors],
+    [importErrors, merged.errors]
+  );
+
+  const summary = useMemo(() => (rows?.length ? buildSummary(rows) : null), [rows]);
+  const isDevin = exportSource === "devin";
+  const showUserBreakdown = !isDevin && exportSource !== "mixed" && (summary?.uniqueUsers ?? 0) > 1;
+  const overageSessionCount = useMemo(
+    () => (rows && isDevin ? rows.filter((r) => r.cost > 0).length : 0),
+    [rows, isDevin]
+  );
+
+  const importFiles = useCallback(
+    async (files: File[]) => {
+      const csvFiles = files.filter(isCsvFile);
+      if (csvFiles.length === 0) return;
+
+      const errors: string[] = [];
+
+      for (const file of csvFiles) {
+        try {
+          const text = await readFileText(file);
+          const result = parseUsageCsv(text);
+          if (!result.ok) {
+            errors.push(`${file.name}: ${result.error}`);
+            continue;
+          }
+
+          await saveStoredFile({
+            id: crypto.randomUUID(),
+            name: file.name,
+            source: result.source,
+            importedAt: Date.now(),
+            text,
+            rowCount: result.rows.length,
+          });
+        } catch (err) {
+          errors.push(`${file.name}: ${err instanceof Error ? err.message : "Import failed"}`);
+        }
+      }
+
+      await refreshStoredFiles();
+      setImportErrors(errors);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+    [refreshStoredFiles]
+  );
+
+  const handleDeleteFile = useCallback(
+    async (id: string) => {
+      await deleteStoredFile(id);
+      await refreshStoredFiles();
+    },
+    [refreshStoredFiles]
+  );
+
+  const openFilePicker = () => fileInputRef.current?.click();
+
+  const onFileInputChange = (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    void importFiles(Array.from(fileList));
   };
 
   const onDragOver = (e: DragEvent) => {
@@ -225,14 +299,13 @@ export default function App() {
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const f = e.dataTransfer.files?.[0];
-    if (f && (f.type === "text/csv" || f.name.endsWith(".csv"))) onFile(f);
+    void importFiles(Array.from(e.dataTransfer.files ?? []));
   };
 
   const onDropzoneKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      fileInputRef.current?.click();
+      openFilePicker();
     }
   };
 
@@ -263,15 +336,32 @@ export default function App() {
       <header className="hero">
         <div className="hero-row">
           <div className="hero-text">
-            <h1>Cursor usage analyzer</h1>
+            <h1>{appTitle(exportSource)}</h1>
           </div>
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={toggleTheme}
-            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            title={theme === "dark" ? "Light theme" : "Dark theme"}
-          >
+          <div className="hero-actions">
+            <button
+              type="button"
+              className="files-toggle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label={`Open imported files panel, ${storedFiles.length} files`}
+              title="Imported files"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+              </svg>
+              <span className="files-toggle-label">Files</span>
+              {storedFiles.length > 0 && (
+                <span className="files-toggle-count">{storedFiles.length}</span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              title={theme === "dark" ? "Light theme" : "Dark theme"}
+            >
             <span className="theme-toggle-icon" aria-hidden>
               {theme === "dark" ? (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -286,24 +376,55 @@ export default function App() {
             </span>
             <span className="theme-toggle-label">{theme === "dark" ? "Light" : "Dark"}</span>
           </button>
+          </div>
         </div>
         <p className="hero-description">
-          Upload a Cursor team usage export (CSV) from{" "}
-          <a href="https://cursor.com/dashboard/usage" target="_blank" rel="noopener noreferrer">
-            cursor.com/dashboard/usage
-          </a>
-          . See spend, tokens, and model mix over time — all processed in your browser.
+          {exportSource === "devin" ? (
+            <>
+              Devin sessions from {merged.fileCount} file{merged.fileCount === 1 ? "" : "s"}. See overage
+              spend, ACU usage, and session activity over time — all processed in your browser.
+            </>
+          ) : exportSource === "mixed" ? (
+            <>
+              Combined Cursor and Devin exports from {merged.fileCount} file
+              {merged.fileCount === 1 ? "" : "s"}. See spend and activity over time — all processed in
+              your browser.
+            </>
+          ) : summary ? (
+            <>
+              Cursor usage from {merged.fileCount} file{merged.fileCount === 1 ? "" : "s"}. See spend,
+              tokens, and model mix over time — all processed in your browser.
+            </>
+          ) : (
+            <>
+              Upload Cursor team usage or Devin session exports (CSV). You can import multiple files —
+              they are saved locally and combined in the dashboard. Export Cursor data from{" "}
+              <a href="https://cursor.com/dashboard/usage" target="_blank" rel="noopener noreferrer">
+                cursor.com/dashboard/usage
+              </a>
+              .
+            </>
+          )}
         </p>
       </header>
+
+      <ImportedFilesSidebar
+        open={sidebarOpen}
+        files={storedFiles}
+        onClose={() => setSidebarOpen(false)}
+        onImportClick={openFilePicker}
+        onDelete={(id) => void handleDeleteFile(id)}
+      />
 
       <input
         ref={fileInputRef}
         type="file"
         accept=".csv,text/csv"
+        multiple
         className="dropzone-hidden-input"
         aria-hidden
         tabIndex={-1}
-        onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+        onChange={(e) => onFileInputChange(e.target.files)}
       />
       {!summary && (
         <>
@@ -311,17 +432,15 @@ export default function App() {
             className="dropzone"
             role="button"
             tabIndex={0}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={openFilePicker}
             onKeyDown={onDropzoneKeyDown}
             onDragOver={onDragOver}
             onDrop={onDrop}
-            aria-label="Upload CSV: choose a file or drag and drop it here"
+            aria-label="Upload CSV files: choose files or drag and drop them here"
           >
-            <strong>Choose a CSV file</strong>
-            <span> or drag and drop it here</span>
+            <strong>Choose CSV files</strong>
+            <span> or drag and drop them here</span>
           </div>
-
-          {fileName && <p className="file-name">Loaded: {fileName}</p>}
 
           <p className="privacy-note">
             <span aria-hidden>🔒</span> Your file stays on your machine — everything is processed locally in your browser.
@@ -329,11 +448,33 @@ export default function App() {
         </>
       )}
 
-      {parseError && <div className="error" role="alert">{parseError}</div>}
+      {parseErrors.length > 0 && (
+        <div className="error" role="alert">
+          {parseErrors.map((err) => (
+            <p key={err} className="error-line">
+              {err}
+            </p>
+          ))}
+        </div>
+      )}
 
       {summary && (
         <>
-          {summary.byUserCost.length > 0 && (
+          <div className="import-bar">
+            <span>
+              Analyzing {merged.fileCount} imported file{merged.fileCount === 1 ? "" : "s"} (
+              {formatInt(summary.rowCount)} rows)
+            </span>
+            <div className="import-bar-actions">
+              <button type="button" className="import-bar-btn" onClick={() => setSidebarOpen(true)}>
+                Manage files
+              </button>
+              <button type="button" className="import-bar-btn import-bar-btn--primary" onClick={openFilePicker}>
+                Add files
+              </button>
+            </div>
+          </div>
+          {summary.byUserCost.length > 0 && showUserBreakdown && (
             <section className="chart-card leaderboard" aria-labelledby="leaderboard-heading">
               <div className="leaderboard-intro">
                 <h2 id="leaderboard-heading" className="leaderboard-title">
@@ -372,24 +513,32 @@ export default function App() {
 
           <div className="kpi-grid">
             <div className="kpi">
-              <div className="kpi-label">Total spend</div>
+              <div className="kpi-label">{isDevin ? "Total overage" : "Total spend"}</div>
               <div className="kpi-value">{formatMoney(summary.totalCost)}</div>
-              <div className="kpi-sub">Sum of reported cost</div>
+              <div className="kpi-sub">
+                {isDevin ? "Sum of overage charges" : "Sum of reported cost"}
+              </div>
             </div>
             <div className="kpi">
-              <div className="kpi-label">Total tokens</div>
+              <div className="kpi-label">{isDevin ? "Total ACU" : "Total tokens"}</div>
               <div className="kpi-value">{formatTokens(summary.totalTokens)}</div>
-              <div className="kpi-sub">All token types combined</div>
+              <div className="kpi-sub">
+                {isDevin ? "Agent compute units used" : "All token types combined"}
+              </div>
             </div>
             <div className="kpi">
-              <div className="kpi-label">Events</div>
+              <div className="kpi-label">{isDevin ? "Sessions" : "Events"}</div>
               <div className="kpi-value">{formatInt(summary.rowCount)}</div>
-              <div className="kpi-sub">Rows in export</div>
+              <div className="kpi-sub">{isDevin ? "Devin sessions in export" : "Rows in export"}</div>
             </div>
             <div className="kpi">
-              <div className="kpi-label">Users</div>
-              <div className="kpi-value">{summary.uniqueUsers}</div>
-              <div className="kpi-sub">Distinct emails</div>
+              <div className="kpi-label">{isDevin ? "Overage sessions" : "Users"}</div>
+              <div className="kpi-value">
+                {isDevin ? formatInt(overageSessionCount) : summary.uniqueUsers}
+              </div>
+              <div className="kpi-sub">
+                {isDevin ? "Sessions with overage charges" : "Distinct emails"}
+              </div>
             </div>
             <div className="kpi">
               <div className="kpi-label">Period</div>
@@ -400,11 +549,13 @@ export default function App() {
               </div>
               <div className="kpi-sub">From first to last event</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-label">Cache read tokens</div>
-              <div className="kpi-value">{formatTokens(summary.totalCacheRead)}</div>
-              <div className="kpi-sub">Context from cache</div>
-            </div>
+            {!isDevin && (
+              <div className="kpi">
+                <div className="kpi-label">Cache read tokens</div>
+                <div className="kpi-value">{formatTokens(summary.totalCacheRead)}</div>
+                <div className="kpi-sub">Context from cache</div>
+              </div>
+            )}
           </div>
 
           <section className="section">
@@ -414,7 +565,7 @@ export default function App() {
               composer sessions or models with bigger context windows.
             </p>
             <div className="chart-card">
-              <h3>Daily cost (USD)</h3>
+              <h3>{isDevin ? "Daily overage (USD)" : "Daily cost (USD)"}</h3>
               <ResponsiveContainer width="100%" height={280}>
                 <AreaChart data={summary.daily} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <defs>
@@ -457,6 +608,7 @@ export default function App() {
               </ResponsiveContainer>
             </div>
 
+            {showUserBreakdown && (
             <div className="chart-card">
               <h3>Daily events by user</h3>
               <ResponsiveContainer width="100%" height={240}>
@@ -551,13 +703,15 @@ export default function App() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </section>
 
           <section className="section">
             <h2 className="section-title">Models and billing kinds</h2>
             <p className="section-desc">
-              Compare which models drive cost versus raw token volume. Premium or long-context
-              models can move the needle on spend even when event counts look similar.
+              {isDevin
+                ? "Compare overage spend versus ACU consumed per session type."
+                : "Compare which models drive cost versus raw token volume. Premium or long-context models can move the needle on spend even when event counts look similar."}
             </p>
             <div className="grid-2">
               <div className="chart-card">
@@ -632,7 +786,7 @@ export default function App() {
               </div>
 
               <div className="chart-card">
-                <h3>Tokens by model (top)</h3>
+                <h3>{isDevin ? "ACU by model" : "Tokens by model (top)"}</h3>
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart
                     layout="vertical"
@@ -758,10 +912,12 @@ export default function App() {
           <section className="section">
             <h2 className="section-title">Top spenders &amp; largest requests</h2>
             <p className="section-desc">
-              Users ranked by total cost in this file, and the single most expensive rows — useful
-              to spot one-off heavy jobs.
+              {isDevin
+                ? "Sessions with the largest overage charges in this export."
+                : "Users ranked by total cost in this file, and the single most expensive rows — useful to spot one-off heavy jobs."}
             </p>
             <div className="grid-2 grid-2--tables">
+              {showUserBreakdown && (
               <div className="chart-card table-card">
                 <div className="table-card-header">
                   <h3 className="section-title table-card-title">Cost by user</h3>
@@ -803,10 +959,17 @@ export default function App() {
                   </table>
                 </div>
               </div>
+              )}
               <div className="chart-card table-card">
                 <div className="table-card-header">
-                  <h3 className="section-title table-card-title">Highest-cost events</h3>
-                  <p className="table-card-desc">Most expensive individual rows in the uploaded export.</p>
+                  <h3 className="section-title table-card-title">
+                    {isDevin ? "Highest overage sessions" : "Highest-cost events"}
+                  </h3>
+                  <p className="table-card-desc">
+                    {isDevin
+                      ? "Devin sessions with the largest overage charges in this export."
+                      : "Most expensive individual rows in the uploaded export."}
+                  </p>
                 </div>
                 <div className="table-wrap">
                   <table className="data-table">
@@ -814,8 +977,8 @@ export default function App() {
                       <tr>
                         <th className="num">#</th>
                         <th>When</th>
-                        <th>User</th>
-                        <th>Model</th>
+                        {!isDevin && <th>User</th>}
+                        <th>{isDevin ? "Session" : "Model"}</th>
                         <th>Cost</th>
                       </tr>
                     </thead>
@@ -829,18 +992,22 @@ export default function App() {
                             <span className="cell-primary">{formatDateLabel(r.date)}</span>
                             <span className="cell-secondary">{formatTimeLabel(r.date)}</span>
                           </td>
+                          {!isDevin && (
+                            <td className="cell-main">
+                              <span className="cell-primary" title={r.user}>
+                                {r.user}
+                              </span>
+                            </td>
+                          )}
                           <td className="cell-main">
-                            <span className="cell-primary" title={r.user}>
-                              {r.user}
+                            <span className="cell-primary" title={isDevin ? r.label ?? r.model : r.model}>
+                              {isDevin ? r.label ?? r.model : r.model}
                             </span>
-                          </td>
-                          <td className="cell-main">
-                            <span className="cell-primary" title={r.model}>
-                              {r.model}
-                            </span>
-                            <span className="cell-secondary">
-                              <span className="badge">{r.kind}</span>
-                            </span>
+                            {!isDevin && (
+                              <span className="cell-secondary">
+                                <span className="badge">{r.kind}</span>
+                              </span>
+                            )}
                           </td>
                           <td className="num">{formatMoney(r.cost)}</td>
                         </tr>
@@ -1014,17 +1181,35 @@ export default function App() {
           <div className="explain">
             <h2>How to read these metrics</h2>
             <dl>
-              <dt>Total tokens</dt>
-              <dd>
-                Cursor reports input (with/without cache write), cache read, and output tokens.
-                Large <strong>cache read</strong> means the model reused a lot of prior context —
-                often cheaper per token than fresh input.
-              </dd>
-              <dt>Cost</dt>
-              <dd>
-                Dollar amounts come straight from the CSV. They reflect model pricing and usage for
-                each billed event (e.g. on-demand vs included allowance).
-              </dd>
+              {isDevin ? (
+                <>
+                  <dt>Total ACU</dt>
+                  <dd>
+                    Devin reports Agent Compute Units (ACU) per session. This is the closest
+                    equivalent to token volume for comparing session intensity.
+                  </dd>
+                  <dt>Overage cost</dt>
+                  <dd>
+                    Dollar amounts come from the <strong>overage_dollars</strong> column — charges
+                    beyond your plan&apos;s included ACU. Sessions with zero overage still count as
+                    activity but do not add to total spend.
+                  </dd>
+                </>
+              ) : (
+                <>
+                  <dt>Total tokens</dt>
+                  <dd>
+                    Cursor reports input (with/without cache write), cache read, and output tokens.
+                    Large <strong>cache read</strong> means the model reused a lot of prior context —
+                    often cheaper per token than fresh input.
+                  </dd>
+                  <dt>Cost</dt>
+                  <dd>
+                    Dollar amounts come straight from the CSV. They reflect model pricing and usage for
+                    each billed event (e.g. on-demand vs included allowance).
+                  </dd>
+                </>
+              )}
               <dt>Daily cost vs daily events</dt>
               <dd>
                 Many small events can cost less than one huge composer run. Compare the two charts
