@@ -27,7 +27,7 @@ import { deleteStoredFile, listStoredFiles, saveStoredFile, type StoredFile } fr
 import ImportedFilesSidebar from "./ImportedFilesSidebar";
 import { mergeStoredFiles } from "./mergeImports";
 import { parseUsageCsv } from "./parseCsv";
-import type { ExportSource, NamedAmount } from "./types";
+import type { ExportSource, NamedAmount, UsageRow } from "./types";
 
 const CHART_COLORS = [
   "#6b8cff",
@@ -126,6 +126,12 @@ function formatTimeLabel(d: Date): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatRowCost(row: UsageRow): string {
+  if (row.cost > 0) return formatMoney(row.cost);
+  if (row.costLabel) return row.costLabel;
+  return formatMoney(0);
 }
 
 function readFileText(file: File): Promise<string> {
@@ -238,6 +244,10 @@ export default function App() {
   const overageSessionCount = useMemo(
     () => (rows && isDevin ? rows.filter((r) => r.cost > 0).length : 0),
     [rows, isDevin]
+  );
+  const mostlyIncluded = useMemo(
+    () => Boolean(!isDevin && summary && summary.includedEventCount > summary.billedEventCount),
+    [isDevin, summary]
   );
 
   const importFiles = useCallback(
@@ -474,6 +484,17 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {mostlyIncluded && (
+            <div className="pricing-notice" role="status">
+              Most requests in this export are marked <strong>Included</strong> — covered by your
+              Cursor subscription with no extra charge. Only{" "}
+              <strong>{formatInt(summary.billedEventCount)}</strong> of{" "}
+              <strong>{formatInt(summary.rowCount)}</strong> events have a dollar cost (
+              {formatMoney(summary.totalCost)} total billed).
+            </div>
+          )}
+
           {summary.byUserCost.length > 0 && showUserBreakdown && (
             <section className="chart-card leaderboard" aria-labelledby="leaderboard-heading">
               <div className="leaderboard-intro">
@@ -513,10 +534,14 @@ export default function App() {
 
           <div className="kpi-grid">
             <div className="kpi">
-              <div className="kpi-label">{isDevin ? "Total overage" : "Total spend"}</div>
+              <div className="kpi-label">{isDevin ? "Total overage" : "Billed spend"}</div>
               <div className="kpi-value">{formatMoney(summary.totalCost)}</div>
               <div className="kpi-sub">
-                {isDevin ? "Sum of overage charges" : "Sum of reported cost"}
+                {isDevin
+                  ? "Sum of overage charges"
+                  : mostlyIncluded
+                    ? `${formatInt(summary.billedEventCount)} paid events`
+                    : "Sum of reported cost"}
               </div>
             </div>
             <div className="kpi">
@@ -532,12 +557,22 @@ export default function App() {
               <div className="kpi-sub">{isDevin ? "Devin sessions in export" : "Rows in export"}</div>
             </div>
             <div className="kpi">
-              <div className="kpi-label">{isDevin ? "Overage sessions" : "Users"}</div>
+              <div className="kpi-label">
+                {isDevin ? "Overage sessions" : mostlyIncluded ? "Included" : "Users"}
+              </div>
               <div className="kpi-value">
-                {isDevin ? formatInt(overageSessionCount) : summary.uniqueUsers}
+                {isDevin
+                  ? formatInt(overageSessionCount)
+                  : mostlyIncluded
+                    ? formatInt(summary.includedEventCount)
+                    : summary.uniqueUsers}
               </div>
               <div className="kpi-sub">
-                {isDevin ? "Sessions with overage charges" : "Distinct emails"}
+                {isDevin
+                  ? "Sessions with overage charges"
+                  : mostlyIncluded
+                    ? "Subscription-covered requests"
+                    : "Distinct emails"}
               </div>
             </div>
             <div className="kpi">
@@ -715,8 +750,34 @@ export default function App() {
             </p>
             <div className="grid-2">
               <div className="chart-card">
-                <h3>Cost by model</h3>
-                <ResponsiveContainer width="100%" height={costByModelChartHeight}>
+                <h3>{mostlyIncluded ? "Requests by cost type" : "Cost by model"}</h3>
+                <ResponsiveContainer width="100%" height={mostlyIncluded ? 300 : costByModelChartHeight}>
+                  {mostlyIncluded ? (
+                    <BarChart
+                      layout="vertical"
+                      data={summary.byCostLabel.slice(0, 10)}
+                      margin={{ top: 8, right: 20, left: 8, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} horizontal={false} />
+                      <XAxis type="number" tick={{ fill: chrome.tick, fontSize: 11 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={120}
+                        tick={{ fill: chrome.tick, fontSize: 10 }}
+                      />
+                      <Tooltip
+                        formatter={(v: number) => formatInt(v)}
+                        contentStyle={{
+                          background: chrome.tooltipBg,
+                          border: `1px solid ${chrome.tooltipBorder}`,
+                          borderRadius: 10,
+                          color: chrome.tooltipText,
+                        }}
+                      />
+                      <Bar dataKey="value" fill="#6b8cff" radius={[0, 4, 4, 0]} name="Requests" />
+                    </BarChart>
+                  ) : (
                   <BarChart
                     layout="vertical"
                     data={costByModelBarData}
@@ -782,6 +843,7 @@ export default function App() {
                       />
                     </Bar>
                   </BarChart>
+                  )}
                 </ResponsiveContainer>
               </div>
 
@@ -818,8 +880,25 @@ export default function App() {
             </div>
 
             <div className="chart-card">
-              <h3>Cost by billing kind</h3>
+              <h3>{mostlyIncluded ? "Events by billing kind" : "Cost by billing kind"}</h3>
               <ResponsiveContainer width="100%" height={240}>
+                {mostlyIncluded ? (
+                  <BarChart data={summary.byKindEvents} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
+                    <XAxis dataKey="name" tick={{ fill: chrome.tick, fontSize: 11 }} />
+                    <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} width={48} />
+                    <Tooltip
+                      formatter={(v: number) => formatInt(v)}
+                      contentStyle={{
+                        background: chrome.tooltipBg,
+                        border: `1px solid ${chrome.tooltipBorder}`,
+                        borderRadius: 10,
+                        color: chrome.tooltipText,
+                      }}
+                    />
+                    <Bar dataKey="value" fill="#3dd6c3" radius={[4, 4, 0, 0]} name="Events" />
+                  </BarChart>
+                ) : (
                 <BarChart data={summary.byKindUser} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
                   <XAxis dataKey="name" tick={{ fill: chrome.tick, fontSize: 11 }} />
@@ -905,6 +984,7 @@ export default function App() {
                     />
                   ))}
                 </BarChart>
+                )}
               </ResponsiveContainer>
             </div>
           </section>
@@ -914,7 +994,9 @@ export default function App() {
             <p className="section-desc">
               {isDevin
                 ? "Sessions with the largest overage charges in this export."
-                : "Users ranked by total cost in this file, and the single most expensive rows — useful to spot one-off heavy jobs."}
+                : mostlyIncluded
+                  ? "Paid requests with dollar amounts, and the largest token-heavy requests (mostly subscription-covered)."
+                  : "Users ranked by total cost in this file, and the single most expensive rows — useful to spot one-off heavy jobs."}
             </p>
             <div className="grid-2 grid-2--tables">
               {showUserBreakdown && (
@@ -960,6 +1042,7 @@ export default function App() {
                 </div>
               </div>
               )}
+              {(summary.topExpensive.length > 0 || isDevin) && (
               <div className="chart-card table-card">
                 <div className="table-card-header">
                   <h3 className="section-title table-card-title">
@@ -968,7 +1051,7 @@ export default function App() {
                   <p className="table-card-desc">
                     {isDevin
                       ? "Devin sessions with the largest overage charges in this export."
-                      : "Most expensive individual rows in the uploaded export."}
+                      : "Rows with an actual dollar cost in the export."}
                   </p>
                 </div>
                 <div className="table-wrap">
@@ -1009,13 +1092,60 @@ export default function App() {
                               </span>
                             )}
                           </td>
-                          <td className="num">{formatMoney(r.cost)}</td>
+                          <td className="num">{formatRowCost(r)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
+              )}
+              {!isDevin && (
+              <div className="chart-card table-card">
+                <div className="table-card-header">
+                  <h3 className="section-title table-card-title">Largest requests</h3>
+                  <p className="table-card-desc">
+                    Highest token usage per request, including subscription-covered usage.
+                  </p>
+                </div>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th className="num">#</th>
+                        <th>When</th>
+                        <th>Model</th>
+                        <th>Tokens</th>
+                        <th>Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.topByTokens.map((r, i) => (
+                        <tr key={i}>
+                          <td className="num cell-rank">
+                            <span className="rank-badge">{i + 1}</span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary">{formatDateLabel(r.date)}</span>
+                            <span className="cell-secondary">{formatTimeLabel(r.date)}</span>
+                          </td>
+                          <td className="cell-main">
+                            <span className="cell-primary" title={r.model}>
+                              {r.model}
+                            </span>
+                            <span className="cell-secondary">
+                              <span className="badge">{r.kind}</span>
+                            </span>
+                          </td>
+                          <td className="num">{formatTokens(r.totalTokens)}</td>
+                          <td className="num">{formatRowCost(r)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              )}
             </div>
           </section>
 
@@ -1205,8 +1335,9 @@ export default function App() {
                   </dd>
                   <dt>Cost</dt>
                   <dd>
-                    Dollar amounts come straight from the CSV. They reflect model pricing and usage for
-                    each billed event (e.g. on-demand vs included allowance).
+                    Dollar amounts come from numeric values in the Cost column. Many Cursor exports mark
+                    subscription usage as <strong>Included</strong> or <strong>Free</strong> instead of
+                    a dollar amount — those requests count as activity but not as extra billed spend.
                   </dd>
                 </>
               )}

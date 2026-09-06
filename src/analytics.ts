@@ -223,6 +223,12 @@ export function buildSummary(rows: UsageRow[]): Summary {
   const byModelCost = aggregate(sorted, (r) => r.model, (r) => r.cost);
   const byModelTokens = aggregate(sorted, (r) => r.model, (r) => r.totalTokens);
   const byKind = aggregate(sorted, (r) => r.kind, (r) => r.cost);
+  const byKindEvents = aggregate(sorted, (r) => r.kind, () => 1);
+  const byCostLabel = aggregate(
+    sorted,
+    (r) => r.costLabel ?? (r.cost > 0 ? "Paid" : "No charge"),
+    () => 1
+  );
   const byUserCost = aggregate(sorted, (r) => r.user, (r) => r.cost);
   const byUserEvents = aggregate(sorted, (r) => r.user, () => 1);
   const dailyUserSeries = byUserEvents.slice(0, 6).map((u) => u.name);
@@ -284,7 +290,18 @@ export function buildSummary(rows: UsageRow[]): Summary {
     return point;
   });
 
-  const topExpensive = [...sorted].sort((a, b) => b.cost - a.cost).slice(0, 8);
+  const topExpensive = [...sorted]
+    .filter((r) => r.cost > 0)
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 8);
+  const topByTokens = [...sorted].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 8);
+
+  let billedEventCount = 0;
+  let includedEventCount = 0;
+  for (const r of sorted) {
+    if (r.cost > 0) billedEventCount += 1;
+    else if (r.costLabel?.toLowerCase() === "included") includedEventCount += 1;
+  }
 
   return {
     rowCount: sorted.length,
@@ -298,6 +315,8 @@ export function buildSummary(rows: UsageRow[]): Summary {
     byModelCost,
     byModelTokens,
     byKind,
+    byKindEvents,
+    byCostLabel,
     byKindUser,
     byUserCost,
     daily,
@@ -305,6 +324,9 @@ export function buildSummary(rows: UsageRow[]): Summary {
     dailyUserSeries: hasOtherUsers ? [...dailyUserSeries, "Other"] : dailyUserSeries,
     kindUserSeries: hasOtherKindUsers ? [...kindUserSeries, "Other"] : kindUserSeries,
     topExpensive,
+    topByTokens,
+    billedEventCount,
+    includedEventCount,
     workStats: computeWorkStats(sorted),
   };
 }

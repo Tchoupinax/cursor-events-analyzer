@@ -58,6 +58,15 @@ function parseNum(v: string | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function parseCostField(v: string | undefined): { cost: number; costLabel?: string } {
+  if (v == null || v === "") return { cost: 0 };
+  const trimmed = String(v).replace(/^"|"$/g, "").trim();
+  if (!trimmed) return { cost: 0 };
+  const n = Number(trimmed.replace(/,/g, ""));
+  if (Number.isFinite(n)) return { cost: n };
+  return { cost: 0, costLabel: trimmed };
+}
+
 function parseDate(s: string): Date | null {
   const trimmed = s.replace(/^"|"$/g, "").trim();
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
@@ -254,6 +263,8 @@ export function parseUsageCsv(raw: string): ParseResult {
     const date = parseDate(dateStr.replace(/^"|"$/g, ""));
     if (!date) continue;
 
+    const { cost, costLabel } = iCost >= 0 ? parseCostField(line[iCost]) : { cost: 0 };
+
     out.push({
       date,
       user: String(line[iUser] ?? "").replace(/^"|"$/g, "") || "(unknown)",
@@ -265,7 +276,8 @@ export function parseUsageCsv(raw: string): ParseResult {
       cacheRead: iCR >= 0 ? parseNum(line[iCR]) : 0,
       outputTokens: iOut >= 0 ? parseNum(line[iOut]) : 0,
       totalTokens: parseNum(line[iTot]),
-      cost: iCost >= 0 ? parseNum(line[iCost]) : 0,
+      cost,
+      costLabel,
     });
   }
 

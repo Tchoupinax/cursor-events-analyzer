@@ -12,6 +12,8 @@ export type UsageRow = {
   outputTokens: number;
   totalTokens: number;
   cost: number;
+  /** Non-numeric cost from export (e.g. Included, Free). */
+  costLabel?: string;
   /** Session title or other row label (e.g. Devin session name). */
   label?: string;
 };
@@ -88,5 +90,10 @@ export type Summary = {
   dailyUserSeries: string[];
   kindUserSeries: string[];
   topExpensive: UsageRow[];
+  topByTokens: UsageRow[];
+  billedEventCount: number;
+  includedEventCount: number;
+  byCostLabel: NamedAmount[];
+  byKindEvents: NamedAmount[];
   workStats: WorkStats;
 };

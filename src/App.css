@@ -898,6 +898,21 @@ td.num {
   color: var(--accent);
 }
 
+.pricing-notice {
+  margin-bottom: 1.25rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.pricing-notice strong {
+  color: var(--accent);
+}
+
 .error-line {
   margin: 0;
 }
