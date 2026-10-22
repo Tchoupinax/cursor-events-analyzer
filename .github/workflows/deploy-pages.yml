@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "25"
+          node-version: "26.12.1"
           cache: npm
 
       - name: Install and build
