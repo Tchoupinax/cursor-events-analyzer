@@ -14,7 +14,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   LabelList,
   Legend,
   ResponsiveContainer,
@@ -29,41 +28,49 @@ import { mergeStoredFiles } from "./mergeImports";
 import { parseUsageCsv } from "./parseCsv";
 import type { ExportSource, NamedAmount, UsageRow } from "./types";
 
-const CHART_COLORS = [
-  "#6b8cff",
-  "#3dd6c3",
-  "#f0b429",
-  "#f472b6",
-  "#a78bfa",
-  "#34d399",
-  "#fb923c",
-  "#94a3b8",
-];
-
+/**
+ * Chart colors per theme. Each measure keeps one hue across the page
+ * (cost, tokens, events, hours); `series` is for per-user breakdowns.
+ */
 const CHART_CHROME = {
   dark: {
     grid: "rgba(255,255,255,0.06)",
-    tick: "#8b93a7",
+    tick: "#959cad",
     axis: "rgba(255,255,255,0.1)",
-    tooltipBg: "#1a1f2a",
-    tooltipBorder: "rgba(255,255,255,0.12)",
-    tooltipMuted: "#8b93a7",
-    tooltipText: "#e6e9ef",
-    legendColor: "#a1a8b8",
+    tooltipBg: "#1b1f29",
+    tooltipBorder: "rgba(255,255,255,0.1)",
+    tooltipMuted: "#959cad",
+    tooltipText: "#e8eaf0",
+    legendColor: "#a8aebd",
+    hover: "rgba(255,255,255,0.04)",
+    cost: "#818cf8",
+    tokens: "#c084fc",
+    events: "#2dd4bf",
+    hours: "#fbbf24",
+    other: "#64748b",
+    series: ["#818cf8", "#2dd4bf", "#fbbf24", "#f472b6", "#c084fc", "#4ade80", "#fb923c"],
   },
   light: {
-    grid: "rgba(15,23,42,0.08)",
-    tick: "#64748b",
+    grid: "rgba(15,23,42,0.07)",
+    tick: "#5b6478",
     axis: "rgba(15,23,42,0.12)",
     tooltipBg: "#ffffff",
-    tooltipBorder: "rgba(15,23,42,0.12)",
-    tooltipMuted: "#64748b",
+    tooltipBorder: "rgba(15,23,42,0.1)",
+    tooltipMuted: "#5b6478",
     tooltipText: "#0f172a",
     legendColor: "#475569",
+    hover: "rgba(79,70,229,0.05)",
+    cost: "#6366f1",
+    tokens: "#a855f7",
+    events: "#14b8a6",
+    hours: "#f59e0b",
+    other: "#94a3b8",
+    series: ["#6366f1", "#14b8a6", "#f59e0b", "#ec4899", "#a855f7", "#22c55e", "#f97316"],
   },
 } as const;
 
 type ThemeMode = "light" | "dark";
+type ChartChrome = (typeof CHART_CHROME)[ThemeMode];
 type WorkStatsGranularity = "day" | "week" | "month";
 
 const THEME_STORAGE_KEY = "cursor-events-analyzer-theme";
@@ -95,10 +102,28 @@ function formatMoney(n: number): string {
 }
 
 function formatTokens(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(Math.round(n));
 }
+
+const COMPACT_NUMBER = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumSignificantDigits: 3,
+});
+
+/** Short axis/bar label: 600M, 1.2B, 454M. */
+function formatCompact(n: number): string {
+  return COMPACT_NUMBER.format(n);
+}
+
+function truncateLabel(s: string, maxChars: number): string {
+  return s.length > maxChars ? `${s.slice(0, Math.max(1, maxChars - 3))}...` : s;
+}
+
+/** Approximate glyph width of an 11px axis label, used to size the label column. */
+const AXIS_LABEL_CHAR_PX = 6;
 
 function formatInt(n: number): string {
   return new Intl.NumberFormat().format(Math.round(n));
@@ -119,6 +144,35 @@ function formatDateLabel(d: Date): string {
     day: "numeric",
     year: "numeric",
   });
+}
+
+/** Parse a "YYYY-MM-DD" day key as a local date. */
+function parseDayKey(day: string): Date | null {
+  const [y, m, d] = day.split("-").map(Number);
+  return y && m && d ? new Date(y, m - 1, d) : null;
+}
+
+/** Axis tick for a day key: "Oct 6". */
+function formatDayTick(day: string): string {
+  const d = parseDayKey(day);
+  return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) : day;
+}
+
+/** Tooltip title for a day key: "Oct 6, 2026". */
+function formatDayTitle(day: string): string {
+  const d = parseDayKey(day);
+  return d ? formatDateLabel(d) : day;
+}
+
+/** "Oct 5 - Nov 18, 2026", repeating the year only when the range spans two. */
+function formatPeriod(min: Date, max: Date): string {
+  const sameYear = min.getFullYear() === max.getFullYear();
+  const start = min.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: sameYear ? undefined : "numeric",
+  });
+  return `${start} - ${formatDateLabel(max)}`;
 }
 
 function formatTimeLabel(d: Date): string {
@@ -169,10 +223,10 @@ function CustomTooltip({
   chrome,
 }: {
   active?: boolean;
-  payload?: { value: number; name?: string; color?: string }[];
+  payload?: readonly { value: number; name?: string; color?: string }[];
   label?: string;
   valueLabel?: string;
-  chrome: (typeof CHART_CHROME)[keyof typeof CHART_CHROME];
+  chrome: ChartChrome;
 }) {
   if (!active || !payload?.length) return null;
   const p = payload[0];
@@ -198,6 +252,199 @@ function CustomTooltip({
   );
 }
 
+/** Color for a per-user series; the "Other" bucket is always neutral. */
+function seriesColor(chrome: ChartChrome, name: string, index: number): string {
+  return name === "Other" ? chrome.other : chrome.series[index % chrome.series.length];
+}
+
+/** Tooltip for stacked per-user bars: non-zero series, largest first. */
+function StackedTooltip({
+  active,
+  payload,
+  label,
+  formatValue,
+  chrome,
+}: {
+  active?: boolean;
+  payload?: readonly { value?: unknown; name?: unknown; dataKey?: unknown; color?: string }[];
+  label: string;
+  formatValue: (v: number) => string;
+  chrome: ChartChrome;
+}) {
+  if (!active || !payload?.length) return null;
+  const items = payload
+    .filter((item) => typeof item.value === "number" && item.value > 0)
+    .sort((a, b) => Number(b.value) - Number(a.value));
+
+  return (
+    <div
+      style={{
+        background: chrome.tooltipBg,
+        border: `1px solid ${chrome.tooltipBorder}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        fontSize: 13,
+        boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+      }}
+    >
+      <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>{label}</div>
+      {items.map((item) => (
+        <div
+          key={String(item.dataKey)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            color: chrome.tooltipText,
+          }}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: item.color,
+                flexShrink: 0,
+              }}
+            />
+            <span title={String(item.name)}>{truncateLabel(String(item.name), 28)}</span>
+          </span>
+          <span>{formatValue(Number(item.value))}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type BarRow = { name: string; value: number; pct?: number };
+
+/**
+ * Ranked horizontal bars (one hue) with single-line category labels and the
+ * value printed at the end of each bar.
+ */
+function HorizontalBars({
+  data,
+  color,
+  chrome,
+  height,
+  labelWidth,
+  labelMaxChars,
+  valueMargin,
+  formatAxis,
+  formatValue,
+  tooltipLines,
+  onResize,
+}: {
+  data: BarRow[];
+  color: string;
+  chrome: ChartChrome;
+  height: number;
+  labelWidth: number;
+  labelMaxChars: number;
+  /** Space kept right of the longest bar for its value label. */
+  valueMargin: number;
+  formatAxis: (v: number) => string;
+  formatValue: (v: number) => string;
+  /** Lines under the name in the tooltip; the first is the value. */
+  tooltipLines: (row: BarRow) => string[];
+  onResize?: (width: number) => void;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height} onResize={onResize}>
+      <BarChart
+        layout="vertical"
+        data={data}
+        margin={{ top: 8, right: valueMargin, left: 8, bottom: 0 }}
+        barCategoryGap="20%"
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} horizontal={false} />
+        <XAxis
+          type="number"
+          tick={{ fill: chrome.tick, fontSize: 11 }}
+          tickFormatter={formatAxis}
+          axisLine={{ stroke: chrome.axis }}
+          tickLine={{ stroke: chrome.axis }}
+        />
+        <YAxis
+          type="category"
+          dataKey="name"
+          width={labelWidth}
+          interval={0}
+          axisLine={{ stroke: chrome.axis }}
+          tickLine={false}
+          tick={({ x, y, payload }) => {
+            const name = String(payload.value);
+            return (
+              <text x={x} y={y} dy="0.35em" textAnchor="end" fill={chrome.tick} fontSize={11}>
+                <title>{name}</title>
+                {truncateLabel(name, labelMaxChars)}
+              </text>
+            );
+          }}
+        />
+        <Tooltip
+          cursor={{ fill: chrome.hover, stroke: "none" }}
+          content={({ active, payload }) => {
+            if (!active || !payload?.length) return null;
+            const row = payload[0].payload as BarRow;
+            const [first, ...rest] = tooltipLines(row);
+            return (
+              <div
+                style={{
+                  background: chrome.tooltipBg,
+                  border: `1px solid ${chrome.tooltipBorder}`,
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                  boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                }}
+              >
+                <div style={{ fontWeight: 600, color: chrome.tooltipText, marginBottom: 4 }}>
+                  {row.name}
+                </div>
+                <div style={{ color: chrome.tooltipText }}>{first}</div>
+                {rest.map((line) => (
+                  <div key={line} style={{ color: chrome.tooltipMuted, fontSize: 12, marginTop: 4 }}>
+                    {line}
+                  </div>
+                ))}
+              </div>
+            );
+          }}
+        />
+        <Bar dataKey="value" fill={color} radius={[0, 4, 4, 0]} maxBarSize={26}>
+          <LabelList
+            dataKey="value"
+            position="right"
+            formatter={(v) => formatValue(Number(v))}
+            style={{ fill: chrome.tick, fontSize: 11, fontWeight: 500 }}
+          />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg
+      className="lock-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => getPreferredTheme());
   const [storedFiles, setStoredFiles] = useState<StoredFile[]>([]);
@@ -205,6 +452,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showWorkStats, setShowWorkStats] = useState(false);
   const [workStatsGranularity, setWorkStatsGranularity] = useState<WorkStatsGranularity>("month");
+  const [modelChartWidth, setModelChartWidth] = useState(0);
 
   const chrome = CHART_CHROME[theme];
 
@@ -319,18 +567,44 @@ export default function App() {
     }
   };
 
-  const costByModelBarData = useMemo(() => {
+  // Left chart of the models row: cost by model, or request counts by cost type
+  // when the export is mostly subscription-covered.
+  const leftModelData = useMemo((): BarRow[] => {
     if (!summary) return [];
-    const total = summary.totalCost;
-    const denom = total > 0 ? total : 1;
+    if (mostlyIncluded) return summary.byCostLabel.slice(0, 10);
+    const denom = summary.totalCost > 0 ? summary.totalCost : 1;
     return topWithOther(summary.byModelCost, 12).map((x) => ({
-      name: x.name,
-      value: x.value,
+      ...x,
+      pct: (x.value / denom) * 100,
+    }));
+  }, [summary, mostlyIncluded]);
+
+  const tokensByModelData = useMemo((): BarRow[] => {
+    if (!summary) return [];
+    const denom = summary.totalTokens > 0 ? summary.totalTokens : 1;
+    return topWithOther(summary.byModelTokens, 12).map((x) => ({
+      ...x,
       pct: (x.value / denom) * 100,
     }));
   }, [summary]);
 
-  const costByModelChartHeight = Math.min(560, Math.max(260, 24 + costByModelBarData.length * 38));
+  // The two model charts share one height and one label column so the cards line up.
+  // The label column fits the longest name, capped to a share of the chart width so
+  // the bars keep room on narrow screens; names past the cap are truncated.
+  const modelRows = Math.max(leftModelData.length, tokensByModelData.length);
+  const modelChartHeight = Math.min(560, Math.max(240, 48 + modelRows * 32));
+  const modelLongestName = [...leftModelData, ...tokensByModelData].reduce(
+    (m, x) => Math.max(m, x.name.length),
+    0
+  );
+  const modelLabelCap = modelChartWidth > 0 ? modelChartWidth * 0.38 : 160;
+  const modelLabelWidth = Math.max(
+    64,
+    Math.min(modelLongestName * AXIS_LABEL_CHAR_PX + 12, modelLabelCap)
+  );
+  const modelLabelMaxChars = Math.floor((modelLabelWidth - 12) / AXIS_LABEL_CHAR_PX);
+  // Room right of the bars for value labels; dollar amounts need more than counts.
+  const modelValueMargin = mostlyIncluded ? 52 : 72;
 
   const workStatsChartData = useMemo(() => {
     if (!summary) return [];
@@ -448,12 +722,27 @@ export default function App() {
             onDrop={onDrop}
             aria-label="Upload CSV files: choose files or drag and drop them here"
           >
-            <strong>Choose CSV files</strong>
-            <span> or drag and drop them here</span>
+            <svg
+              className="dropzone-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M12 16V4M7 9l5-5 5 5" />
+              <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
+            </svg>
+            <div>
+              <strong>Choose CSV files</strong>
+              <span> or drag and drop them here</span>
+            </div>
           </div>
 
           <p className="privacy-note">
-            <span aria-hidden>🔒</span> Your file stays on your machine — everything is processed locally in your browser.
+            <LockIcon /> Your file stays on your machine — everything is processed locally in your browser.
           </p>
         </>
       )}
@@ -495,45 +784,8 @@ export default function App() {
             </div>
           )}
 
-          {summary.byUserCost.length > 0 && showUserBreakdown && (
-            <section className="chart-card leaderboard" aria-labelledby="leaderboard-heading">
-              <div className="leaderboard-intro">
-                <h2 id="leaderboard-heading" className="leaderboard-title">
-                  Spend leaderboard
-                </h2>
-                <p className="leaderboard-desc">Users ranked by total cost in this file.</p>
-              </div>
-              <ol className="leaderboard-list">
-                {summary.byUserCost.map((u, i) => {
-                  const rank = i + 1;
-                  const pct =
-                    summary.totalCost > 0 ? (u.value / summary.totalCost) * 100 : 0;
-                  return (
-                    <li
-                      key={u.name}
-                      className={
-                        rank <= 3 ? `leaderboard-row leaderboard-row--podium leaderboard-row--${rank}` : "leaderboard-row"
-                      }
-                      aria-label={`${rank}. ${u.name}, ${formatMoney(u.value)}, ${pct.toFixed(1)}% of total spend`}
-                    >
-                      <span className="leaderboard-fill" aria-hidden style={{ width: `${Math.max(pct, 4)}%` }} />
-                      <span className="leaderboard-rank">{rank}</span>
-                      <span className="leaderboard-name" title={u.name}>
-                        {u.name}
-                      </span>
-                      <span className="leaderboard-stats">
-                        <span className="leaderboard-pct">{formatPct(pct)}</span>
-                        <span className="leaderboard-cost">{formatMoney(u.value)}</span>
-                      </span>
-                    </li>
-                  );
-                })}
-              </ol>
-            </section>
-          )}
-
           <div className="kpi-grid">
-            <div className="kpi">
+            <div className="kpi kpi--primary">
               <div className="kpi-label">{isDevin ? "Total overage" : "Billed spend"}</div>
               <div className="kpi-value">{formatMoney(summary.totalCost)}</div>
               <div className="kpi-sub">
@@ -577,10 +829,10 @@ export default function App() {
             </div>
             <div className="kpi">
               <div className="kpi-label">Period</div>
-              <div className="kpi-value" style={{ fontSize: "1.1rem" }}>
+              <div className="kpi-value kpi-value--text">
                 {summary.dateMin && summary.dateMax
-                  ? `${summary.dateMin.toLocaleDateString()} – ${summary.dateMax.toLocaleDateString()}`
-                  : "—"}
+                  ? formatPeriod(summary.dateMin, summary.dateMax)
+                  : "-"}
               </div>
               <div className="kpi-sub">From first to last event</div>
             </div>
@@ -592,6 +844,43 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {summary.byUserCost.length > 0 && showUserBreakdown && (
+            <section className="chart-card leaderboard" aria-labelledby="leaderboard-heading">
+              <div className="leaderboard-intro">
+                <h2 id="leaderboard-heading" className="leaderboard-title">
+                  Spend leaderboard
+                </h2>
+                <p className="leaderboard-desc">Users ranked by total cost in this file.</p>
+              </div>
+              <ol className="leaderboard-list">
+                {summary.byUserCost.map((u, i) => {
+                  const rank = i + 1;
+                  const pct =
+                    summary.totalCost > 0 ? (u.value / summary.totalCost) * 100 : 0;
+                  return (
+                    <li
+                      key={u.name}
+                      className={
+                        rank <= 3 ? `leaderboard-row leaderboard-row--podium leaderboard-row--${rank}` : "leaderboard-row"
+                      }
+                      aria-label={`${rank}. ${u.name}, ${formatMoney(u.value)}, ${pct.toFixed(1)}% of total spend`}
+                    >
+                      <span className="leaderboard-fill" aria-hidden style={{ width: `${Math.max(pct, 4)}%` }} />
+                      <span className="leaderboard-rank">{rank}</span>
+                      <span className="leaderboard-name" title={u.name}>
+                        {u.name}
+                      </span>
+                      <span className="leaderboard-stats">
+                        <span className="leaderboard-pct">{formatPct(pct)}</span>
+                        <span className="leaderboard-cost">{formatMoney(u.value)}</span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          )}
 
           <section className="section">
             <h2 className="section-title">Spend and activity over time</h2>
@@ -605,28 +894,33 @@ export default function App() {
                 <AreaChart data={summary.daily} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id={`costFill-${theme}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6b8cff" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="#6b8cff" stopOpacity={0} />
+                      <stop offset="0%" stopColor={chrome.cost} stopOpacity={0.3} />
+                      <stop offset="100%" stopColor={chrome.cost} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} vertical={false} />
                   <XAxis
                     dataKey="day"
                     tick={{ fill: chrome.tick, fontSize: 11 }}
+                    tickFormatter={formatDayTick}
+                    minTickGap={28}
                     tickLine={false}
                     axisLine={{ stroke: chrome.axis }}
                   />
                   <YAxis
                     tick={{ fill: chrome.tick, fontSize: 11 }}
-                    tickFormatter={(v) => `$${v}`}
+                    tickFormatter={(v) => `$${formatCompact(v)}`}
+                    tickLine={false}
+                    axisLine={false}
                     width={48}
                   />
                   <Tooltip
+                    cursor={{ stroke: chrome.axis }}
                     content={({ active, payload, label }) => (
                       <CustomTooltip
                         active={active}
-                        payload={payload as { value: number }[]}
-                        label={label as string}
+                        payload={payload as readonly { value: number }[]}
+                        label={formatDayTitle(String(label))}
                         valueLabel="Cost"
                         chrome={chrome}
                       />
@@ -635,7 +929,7 @@ export default function App() {
                   <Area
                     type="monotone"
                     dataKey="cost"
-                    stroke="#6b8cff"
+                    stroke={chrome.cost}
                     strokeWidth={2}
                     fill={`url(#costFill-${theme})`}
                   />
@@ -648,90 +942,49 @@ export default function App() {
               <h3>Daily events by user</h3>
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={summary.dailyByUser} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} vertical={false} />
                   <XAxis
                     dataKey="day"
                     tick={{ fill: chrome.tick, fontSize: 11 }}
+                    tickFormatter={formatDayTick}
+                    minTickGap={28}
                     tickLine={false}
+                    axisLine={{ stroke: chrome.axis }}
                   />
-                  <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} width={40} />
+                  <YAxis
+                    tick={{ fill: chrome.tick, fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={40}
+                  />
                   <Legend
-                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }}
+                    itemSorter={null}
+                    iconType="circle"
+                    iconSize={8}
+                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12, paddingTop: 8 }}
                     formatter={(value) => (
-                      <span style={{ color: chrome.legendColor }}>
-                        {String(value).length > 22 ? `${String(value).slice(0, 20)}...` : String(value)}
-                      </span>
+                      <span style={{ color: chrome.legendColor }}>{truncateLabel(String(value), 22)}</span>
                     )}
                   />
                   <Tooltip
-                    content={({ active, payload, label }) => {
-                      if (!active || !payload?.length) return null;
-                      const items = [...payload]
-                        .filter((item) => typeof item.value === "number" && Number(item.value) > 0)
-                        .sort((a, b) => Number(b.value) - Number(a.value));
-
-                      return (
-                        <div
-                          style={{
-                            background: chrome.tooltipBg,
-                            border: `1px solid ${chrome.tooltipBorder}`,
-                            borderRadius: 10,
-                            padding: "10px 12px",
-                            fontSize: 13,
-                            boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                          }}
-                        >
-                          <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>
-                            {label as string}
-                          </div>
-                          {items.map((item) => (
-                            <div
-                              key={String(item.dataKey)}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: 12,
-                                color: chrome.tooltipText,
-                              }}
-                            >
-                              <span
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 8,
-                                  minWidth: 0,
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    width: 8,
-                                    height: 8,
-                                    borderRadius: 999,
-                                    background: item.color,
-                                    flexShrink: 0,
-                                  }}
-                                />
-                                <span title={String(item.name)}>
-                                  {String(item.name).length > 28
-                                    ? `${String(item.name).slice(0, 26)}...`
-                                    : String(item.name)}
-                                </span>
-                              </span>
-                              <span>{formatInt(Number(item.value))}</span>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    }}
+                    cursor={{ fill: chrome.hover, stroke: "none" }}
+                    content={({ active, payload, label }) => (
+                      <StackedTooltip
+                        active={active}
+                        payload={payload}
+                        label={formatDayTitle(String(label))}
+                        formatValue={formatInt}
+                        chrome={chrome}
+                      />
+                    )}
                   />
                   {summary.dailyUserSeries.map((user, i) => (
                     <Bar
                       key={user}
                       dataKey={user}
                       stackId="events"
-                      fill={CHART_COLORS[i % CHART_COLORS.length]}
-                      radius={i === summary.dailyUserSeries.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                      fill={seriesColor(chrome, user, i)}
+                      radius={i === summary.dailyUserSeries.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
                       name={user}
                     />
                   ))}
@@ -751,131 +1004,42 @@ export default function App() {
             <div className="grid-2">
               <div className="chart-card">
                 <h3>{mostlyIncluded ? "Requests by cost type" : "Cost by model"}</h3>
-                <ResponsiveContainer width="100%" height={mostlyIncluded ? 300 : costByModelChartHeight}>
-                  {mostlyIncluded ? (
-                    <BarChart
-                      layout="vertical"
-                      data={summary.byCostLabel.slice(0, 10)}
-                      margin={{ top: 8, right: 20, left: 8, bottom: 0 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} horizontal={false} />
-                      <XAxis type="number" tick={{ fill: chrome.tick, fontSize: 11 }} />
-                      <YAxis
-                        type="category"
-                        dataKey="name"
-                        width={120}
-                        tick={{ fill: chrome.tick, fontSize: 10 }}
-                      />
-                      <Tooltip
-                        formatter={(v: number) => formatInt(v)}
-                        contentStyle={{
-                          background: chrome.tooltipBg,
-                          border: `1px solid ${chrome.tooltipBorder}`,
-                          borderRadius: 10,
-                          color: chrome.tooltipText,
-                        }}
-                      />
-                      <Bar dataKey="value" fill="#6b8cff" radius={[0, 4, 4, 0]} name="Requests" />
-                    </BarChart>
-                  ) : (
-                  <BarChart
-                    layout="vertical"
-                    data={costByModelBarData}
-                    margin={{ top: 8, right: 88, left: 4, bottom: 8 }}
-                    barCategoryGap="12%"
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} horizontal={false} />
-                    <XAxis
-                      type="number"
-                      tick={{ fill: chrome.tick, fontSize: 11 }}
-                      tickFormatter={(v) => `$${v}`}
-                      domain={[0, "auto"]}
-                      axisLine={{ stroke: chrome.axis }}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={148}
-                      tick={{ fill: chrome.tick, fontSize: 10 }}
-                      tickFormatter={(v: string) => (v.length > 22 ? `${v.slice(0, 20)}…` : v)}
-                      interval={0}
-                    />
-                    <Tooltip
-                      cursor={{ fill: "rgba(107, 140, 255, 0.06)" }}
-                      content={({ active, payload }) => {
-                        if (!active || !payload?.length) return null;
-                        const row = payload[0].payload as {
-                          name: string;
-                          value: number;
-                          pct: number;
-                        };
-                        return (
-                          <div
-                            style={{
-                              background: chrome.tooltipBg,
-                              border: `1px solid ${chrome.tooltipBorder}`,
-                              borderRadius: 10,
-                              padding: "10px 12px",
-                              fontSize: 13,
-                              boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                            }}
-                          >
-                            <div style={{ fontWeight: 600, color: chrome.tooltipText, marginBottom: 4 }}>
-                              {row.name}
-                            </div>
-                            <div style={{ color: chrome.tooltipText }}>{formatMoney(row.value)}</div>
-                            <div style={{ color: chrome.tooltipMuted, fontSize: 12, marginTop: 4 }}>
-                              {row.pct.toFixed(1)}% of total spend
-                            </div>
-                          </div>
-                        );
-                      }}
-                    />
-                    <Bar dataKey="value" radius={[0, 6, 6, 0]} maxBarSize={28}>
-                      {costByModelBarData.map((_, i) => (
-                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                      ))}
-                      <LabelList
-                        dataKey="value"
-                        position="right"
-                        formatter={(v: number) => formatMoney(v)}
-                        style={{ fill: chrome.tick, fontSize: 11, fontWeight: 500 }}
-                      />
-                    </Bar>
-                  </BarChart>
-                  )}
-                </ResponsiveContainer>
+                <HorizontalBars
+                  data={leftModelData}
+                  color={mostlyIncluded ? chrome.events : chrome.cost}
+                  chrome={chrome}
+                  height={modelChartHeight}
+                  labelWidth={modelLabelWidth}
+                  labelMaxChars={modelLabelMaxChars}
+                  valueMargin={modelValueMargin}
+                  formatAxis={mostlyIncluded ? formatCompact : (v) => `$${formatCompact(v)}`}
+                  formatValue={mostlyIncluded ? formatCompact : formatMoney}
+                  tooltipLines={(row) =>
+                    mostlyIncluded
+                      ? [`${formatInt(row.value)} requests`]
+                      : [formatMoney(row.value), `${(row.pct ?? 0).toFixed(1)}% of total spend`]
+                  }
+                  onResize={setModelChartWidth}
+                />
               </div>
 
               <div className="chart-card">
                 <h3>{isDevin ? "ACU by model" : "Tokens by model (top)"}</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart
-                    layout="vertical"
-                    data={summary.byModelTokens.slice(0, 10)}
-                    margin={{ top: 8, right: 20, left: 8, bottom: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
-                    <XAxis type="number" tick={{ fill: chrome.tick, fontSize: 11 }} tickFormatter={formatTokens} />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={120}
-                      tick={{ fill: chrome.tick, fontSize: 10 }}
-                    />
-                    <Tooltip
-                      formatter={(v: number) => formatInt(v)}
-                      contentStyle={{
-                        background: chrome.tooltipBg,
-                        border: `1px solid ${chrome.tooltipBorder}`,
-                        borderRadius: 10,
-                        color: chrome.tooltipText,
-                        boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                      }}
-                    />
-                    <Bar dataKey="value" fill="#f472b6" radius={[0, 4, 4, 0]} name="Tokens" />
-                  </BarChart>
-                </ResponsiveContainer>
+                <HorizontalBars
+                  data={tokensByModelData}
+                  color={chrome.tokens}
+                  chrome={chrome}
+                  height={modelChartHeight}
+                  labelWidth={modelLabelWidth}
+                  labelMaxChars={modelLabelMaxChars}
+                  valueMargin={modelValueMargin}
+                  formatAxis={formatCompact}
+                  formatValue={formatCompact}
+                  tooltipLines={(row) => [
+                    `${formatInt(row.value)} ${isDevin ? "ACU" : "tokens"}`,
+                    `${(row.pct ?? 0).toFixed(1)}% of all ${isDevin ? "ACU" : "tokens"}`,
+                  ]}
+                />
               </div>
             </div>
 
@@ -884,11 +1048,23 @@ export default function App() {
               <ResponsiveContainer width="100%" height={240}>
                 {mostlyIncluded ? (
                   <BarChart data={summary.byKindEvents} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
-                    <XAxis dataKey="name" tick={{ fill: chrome.tick, fontSize: 11 }} />
-                    <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} width={48} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} vertical={false} />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fill: chrome.tick, fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={{ stroke: chrome.axis }}
+                    />
+                    <YAxis
+                      tick={{ fill: chrome.tick, fontSize: 11 }}
+                      tickFormatter={formatCompact}
+                      tickLine={false}
+                      axisLine={false}
+                      width={48}
+                    />
                     <Tooltip
-                      formatter={(v: number) => formatInt(v)}
+                      cursor={{ fill: chrome.hover, stroke: "none" }}
+                      formatter={(v) => formatInt(Number(v))}
                       contentStyle={{
                         background: chrome.tooltipBg,
                         border: `1px solid ${chrome.tooltipBorder}`,
@@ -896,90 +1072,59 @@ export default function App() {
                         color: chrome.tooltipText,
                       }}
                     />
-                    <Bar dataKey="value" fill="#3dd6c3" radius={[4, 4, 0, 0]} name="Events" />
+                    <Bar
+                      dataKey="value"
+                      fill={chrome.events}
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={96}
+                      name="Events"
+                    />
                   </BarChart>
                 ) : (
                 <BarChart data={summary.byKindUser} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
-                  <XAxis dataKey="name" tick={{ fill: chrome.tick, fontSize: 11 }} />
-                  <YAxis tick={{ fill: chrome.tick, fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} vertical={false} />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fill: chrome.tick, fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={{ stroke: chrome.axis }}
+                  />
+                  <YAxis
+                    tick={{ fill: chrome.tick, fontSize: 11 }}
+                    tickFormatter={(v) => `$${formatCompact(v)}`}
+                    tickLine={false}
+                    axisLine={false}
+                    width={48}
+                  />
                   <Legend
-                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }}
+                    itemSorter={null}
+                    iconType="circle"
+                    iconSize={8}
+                    wrapperStyle={{ color: chrome.legendColor, fontSize: 12, paddingTop: 8 }}
                     formatter={(value) => (
-                      <span style={{ color: chrome.legendColor }}>
-                        {String(value).length > 22 ? `${String(value).slice(0, 20)}...` : String(value)}
-                      </span>
+                      <span style={{ color: chrome.legendColor }}>{truncateLabel(String(value), 22)}</span>
                     )}
                   />
                   <Tooltip
-                    content={({ active, payload, label }) => {
-                      if (!active || !payload?.length) return null;
-                      const items = [...payload]
-                        .filter((item) => typeof item.value === "number" && Number(item.value) > 0)
-                        .sort((a, b) => Number(b.value) - Number(a.value));
-
-                      return (
-                        <div
-                          style={{
-                            background: chrome.tooltipBg,
-                            border: `1px solid ${chrome.tooltipBorder}`,
-                            borderRadius: 10,
-                            padding: "10px 12px",
-                            fontSize: 13,
-                            boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                          }}
-                        >
-                          <div style={{ marginBottom: 6, color: chrome.tooltipMuted, fontSize: 12 }}>
-                            {label as string}
-                          </div>
-                          {items.map((item) => (
-                            <div
-                              key={String(item.dataKey)}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: 12,
-                                color: chrome.tooltipText,
-                              }}
-                            >
-                              <span
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 8,
-                                  minWidth: 0,
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    width: 8,
-                                    height: 8,
-                                    borderRadius: 999,
-                                    background: item.color,
-                                    flexShrink: 0,
-                                  }}
-                                />
-                                <span title={String(item.name)}>
-                                  {String(item.name).length > 28
-                                    ? `${String(item.name).slice(0, 26)}...`
-                                    : String(item.name)}
-                                </span>
-                              </span>
-                              <span>{formatMoney(Number(item.value))}</span>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    }}
+                    cursor={{ fill: chrome.hover, stroke: "none" }}
+                    content={({ active, payload, label }) => (
+                      <StackedTooltip
+                        active={active}
+                        payload={payload}
+                        label={String(label)}
+                        formatValue={formatMoney}
+                        chrome={chrome}
+                      />
+                    )}
                   />
                   {summary.kindUserSeries.map((user, i) => (
                     <Bar
                       key={user}
                       dataKey={user}
                       stackId="billing-kind"
-                      fill={CHART_COLORS[i % CHART_COLORS.length]}
+                      fill={seriesColor(chrome, user, i)}
                       radius={i === summary.kindUserSeries.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
+                      maxBarSize={96}
                       name={user}
                     />
                   ))}
@@ -1012,7 +1157,7 @@ export default function App() {
                         <th className="num">#</th>
                         <th>User</th>
                         <th>Share</th>
-                        <th>Cost</th>
+                        <th className="num">Cost</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1062,7 +1207,7 @@ export default function App() {
                         <th>When</th>
                         {!isDevin && <th>User</th>}
                         <th>{isDevin ? "Session" : "Model"}</th>
-                        <th>Cost</th>
+                        <th className="num">Cost</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1071,7 +1216,7 @@ export default function App() {
                           <td className="num cell-rank">
                             <span className="rank-badge">{i + 1}</span>
                           </td>
-                          <td className="cell-main">
+                          <td className="cell-when">
                             <span className="cell-primary">{formatDateLabel(r.date)}</span>
                             <span className="cell-secondary">{formatTimeLabel(r.date)}</span>
                           </td>
@@ -1115,8 +1260,8 @@ export default function App() {
                         <th className="num">#</th>
                         <th>When</th>
                         <th>Model</th>
-                        <th>Tokens</th>
-                        <th>Cost</th>
+                        <th className="num">Tokens</th>
+                        <th className="num">Cost</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1125,7 +1270,7 @@ export default function App() {
                           <td className="num cell-rank">
                             <span className="rank-badge">{i + 1}</span>
                           </td>
-                          <td className="cell-main">
+                          <td className="cell-when">
                             <span className="cell-primary">{formatDateLabel(r.date)}</span>
                             <span className="cell-secondary">{formatTimeLabel(r.date)}</span>
                           </td>
@@ -1229,17 +1374,21 @@ export default function App() {
                   </h3>
                   <ResponsiveContainer width="100%" height={workStatsChartHeight}>
                     <BarChart data={workStatsChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chrome.grid} vertical={false} />
                       <XAxis
                         dataKey="label"
-                        tick={{ fill: chrome.tick, fontSize: 10 }}
+                        tick={{ fill: chrome.tick, fontSize: 11 }}
                         tickLine={false}
+                        axisLine={{ stroke: chrome.axis }}
                         interval={workStatsGranularity === "day" ? "preserveStartEnd" : 0}
                         minTickGap={workStatsGranularity === "day" ? 28 : 8}
                       />
                       <YAxis
                         yAxisId="events"
                         tick={{ fill: chrome.tick, fontSize: 11 }}
+                        tickFormatter={formatCompact}
+                        tickLine={false}
+                        axisLine={false}
                         width={40}
                       />
                       <YAxis
@@ -1247,10 +1396,19 @@ export default function App() {
                         orientation="right"
                         tick={{ fill: chrome.tick, fontSize: 11 }}
                         tickFormatter={(v) => formatHours(v)}
+                        tickLine={false}
+                        axisLine={false}
                         width={48}
                       />
-                      <Legend wrapperStyle={{ color: chrome.legendColor, fontSize: 12 }} />
+                      <Legend
+                        itemSorter={null}
+                        iconType="circle"
+                        iconSize={8}
+                        wrapperStyle={{ color: chrome.legendColor, fontSize: 12, paddingTop: 8 }}
+                        formatter={(value) => <span style={{ color: chrome.legendColor }}>{value}</span>}
+                      />
                       <Tooltip
+                        cursor={{ fill: chrome.hover, stroke: "none" }}
                         content={({ active, payload, label }) => {
                           if (!active || !payload?.length) return null;
                           const row = payload[0]?.payload as {
@@ -1288,7 +1446,7 @@ export default function App() {
                       <Bar
                         yAxisId="events"
                         dataKey="events"
-                        fill="#6b8cff"
+                        fill={chrome.events}
                         radius={[4, 4, 0, 0]}
                         name="Events"
                         maxBarSize={workStatsGranularity === "day" ? 6 : 28}
@@ -1296,7 +1454,7 @@ export default function App() {
                       <Bar
                         yAxisId="hours"
                         dataKey="hours"
-                        fill="#f0b429"
+                        fill={chrome.hours}
                         radius={[4, 4, 0, 0]}
                         name="Active hours"
                         maxBarSize={workStatsGranularity === "day" ? 6 : 28}
@@ -1362,7 +1520,7 @@ export default function App() {
 
           <footer className="app-footer">
             <p>
-              <span aria-hidden>🔒</span> All processing happens locally in your browser. Your CSV is never uploaded to any server.
+              <LockIcon /> All processing happens locally in your browser. Your CSV is never uploaded to any server.
             </p>
           </footer>
         </>
